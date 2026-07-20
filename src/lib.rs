@@ -2,9 +2,11 @@
 
 use std::{
     any::type_name_of_val,
+    cell::RefCell,
     collections::HashMap,
     fmt::Display,
     iter::{Iterator, Peekable},
+    rc::Rc,
     str::Chars,
 };
 
@@ -57,13 +59,98 @@ macro_rules! expr {
     };
 }
 
+pub enum Error {
+    Lex(LexError),
+    Parse(ParseError),
+    Compile(CompileError),
+    Runtime(RuntimeError),
+}
+
+impl From<LexError> for Error {
+    fn from(value: LexError) -> Self {
+        Error::Lex(value)
+    }
+}
+impl From<ParseError> for Error {
+    fn from(value: ParseError) -> Self {
+        match value {
+            ParseError::Lex(err) => Error::Lex(err),
+            _ => Error::Parse(value),
+        }
+    }
+}
+impl From<CompileError> for Error {
+    fn from(value: CompileError) -> Self {
+        Error::Compile(value)
+    }
+}
+impl From<RuntimeError> for Error {
+    fn from(value: RuntimeError) -> Self {
+        Error::Runtime(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Closure {
+    params: Vec<String>,
+    body: Rc<Expr>,
+    env: Env,
+}
+
+impl Display for Closure {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "(lambda (")?;
+        for (i, param) in self.params.iter().enumerate() {
+            write!(f, "{param}")?;
+            if i != self.params.len() - 1 {
+                write!(f, " ")?;
+            }
+        }
+        write!(f, ") {})", self.body)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Symbol(String),
     String(String),
     Number(f64),
     NativeFunction(fn(&[Value]) -> Result<Value, RuntimeError>),
+    Closure(Closure),
     Nil,
+}
+
+impl Value {
+    pub fn symbol(self) -> Option<String> {
+        use Value::*;
+        match self {
+            Symbol(symbol) => Some(symbol),
+            _ => None,
+        }
+    }
+    pub fn is_symbol(&self) -> bool {
+        matches!(self, Value::Symbol(_))
+    }
+    pub fn string(self) -> Option<String> {
+        use Value::*;
+        match self {
+            String(string) => Some(string),
+            _ => None,
+        }
+    }
+    pub fn is_string(&self) -> bool {
+        matches!(self, Value::String(_))
+    }
+    pub fn number(self) -> Option<f64> {
+        use Value::*;
+        match self {
+            Number(number) => Some(number),
+            _ => None,
+        }
+    }
+    pub fn is_number(&self) -> bool {
+        matches!(self, Value::Number(_))
+    }
 }
 
 impl From<f64> for Value {
@@ -85,11 +172,196 @@ impl From<&str> for Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Value::Symbol(ident) => write!(f, "{ident}"),
-            Value::String(string) => write!(f, "\"{string}\""),
+            Value::Symbol(ident) => write!(f, "'{ident}"),
+            Value::String(string) => write!(f, "{string}"),
             Value::Number(num) => write!(f, "{num}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
+            Value::Closure(closure) => write!(f, "{closure}"),
             Value::Nil => write!(f, "nil"),
+        }
+    }
+}
+
+// Lexer
+//
+
+#[derive(Debug, Copy, Clone)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum TokenKind {
+    OpenParen,
+    CloseParen,
+    Symbol(String),
+    String(String),
+    Number(f64),
+}
+
+#[derive(Debug)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
+}
+
+impl Token {
+    pub fn new(kind: TokenKind, span: Span) -> Token {
+        Token { kind, span }
+    }
+}
+
+fn is_delimiter(c: char) -> bool {
+    c.is_whitespace() || c == '(' || c == ')' || c == '"'
+}
+
+#[derive(Debug)]
+pub struct Lexer<'a> {
+    chars: Peekable<Chars<'a>>,
+    cur: usize,
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(program: &'a str) -> Self {
+        let chars = program.chars().peekable();
+
+        Self { chars, cur: 0 }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(&ch) = self.chars.peek()
+            && ch.is_whitespace()
+        {
+            self.cur += 1;
+            self.chars.next();
+        }
+    }
+
+    pub fn is_eof(&mut self) -> bool {
+        self.chars.peek().is_none()
+    }
+
+    fn span(&mut self, size: usize) -> Span {
+        let start = self.cur;
+        self.cur += size;
+        Span {
+            start,
+            end: self.cur,
+        }
+    }
+
+    fn next_oparen(&mut self) -> Option<Result<Token, LexError>> {
+        self.chars.next();
+        Some(Ok(Token::new(TokenKind::OpenParen, self.span(1))))
+    }
+    fn next_cparen(&mut self) -> Option<Result<Token, LexError>> {
+        self.chars.next();
+        Some(Ok(Token::new(TokenKind::CloseParen, self.span(1))))
+    }
+    fn next_string(&mut self) -> Option<Result<Token, LexError>> {
+        let mut size = 0;
+
+        self.chars.next();
+        let mut res = String::new();
+        while let Some(&ch) = self.chars.peek()
+            && ch != '"'
+        {
+            if self.chars.next().unwrap() == '\\' {
+                if self.chars.peek().is_none() {
+                    let span = self.span(res.len() + 2);
+                    return Some(Err(LexError::new(LexErrorKind::UnclosedString, span)));
+                }
+
+                match self.chars.next().unwrap() {
+                    'n' => res.push('\n'),
+                    '\\' => res.push('\\'),
+                    '"' => res.push('"'),
+                    _ => todo!(),
+                }
+                size += 1;
+            } else {
+                res.push(ch);
+            }
+        }
+
+        if self.is_eof() {
+            size += res.len() + 1;
+            let span = self.span(size);
+            return Some(Err(LexError::new(LexErrorKind::UnclosedString, span)));
+        }
+
+        size += res.len() + 2;
+        let span = self.span(size);
+        self.chars.next();
+
+        Some(Ok(Token::new(TokenKind::String(res), span)))
+    }
+    fn next_number(&mut self) -> Option<Result<Token, LexError>> {
+        let mut res = String::new();
+        while let Some(&ch) = self.chars.peek()
+            && ch.is_alphanumeric()
+        {
+            self.chars.next();
+            res.push(ch);
+        }
+        let span = self.span(res.len());
+        let number: f64;
+        match res.parse() {
+            Ok(num) => number = num,
+            Err(_) => return Some(Err(LexError::new(LexErrorKind::InvalidNumber, span))),
+        }
+        Some(Ok(Token::new(TokenKind::Number(number), span)))
+    }
+    fn next_symbol(&mut self) -> Option<Result<Token, LexError>> {
+        let mut res = String::new();
+        while let Some(&ch) = self.chars.peek()
+            && !is_delimiter(ch)
+        {
+            self.chars.next();
+            res.push(ch);
+        }
+        let span = self.span(res.len());
+        Some(Ok(Token::new(TokenKind::Symbol(res), span)))
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum LexErrorKind {
+    UnclosedString,
+    InvalidNumber,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct LexError {
+    pub kind: LexErrorKind,
+    pub span: Span,
+}
+
+impl LexError {
+    fn new(kind: LexErrorKind, span: Span) -> LexError {
+        LexError { kind, span }
+    }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Result<Token, LexError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.skip_whitespace();
+        let ch = *self.chars.peek()?;
+
+        match ch {
+            '(' => self.next_oparen(),
+            ')' => self.next_cparen(),
+            '"' => self.next_string(),
+            _ => {
+                if ch.is_numeric() {
+                    self.next_number()
+                } else {
+                    self.next_symbol()
+                }
+            }
         }
     }
 }
@@ -97,58 +369,54 @@ impl Display for Value {
 // Parser
 //
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Atom(Value),
     Cons(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
-    pub fn compile(self) -> Vec<Instr> {
-        let mut res: Vec<Instr> = vec![];
+    pub fn list(self) -> Vec<Expr> {
+        assert!(self.is_cons());
+        let mut res: Vec<Expr> = vec![];
 
-        fn compile_list(head: Expr, tail: Expr, program: &mut Vec<Instr>) {
-            if let Expr::Atom(value) = head {
-                if let Value::Symbol(name) = value {
-                    program.push(Instr::LoadGlobal(name));
-                    // this should only work for functions and we don't check that here
-                } else {
-                    program.push(Instr::Push(value));
-                }
-                let mut argc = 0;
-                let mut args = tail;
-
-                while let Expr::Cons(car, cdr) = args {
-                    let car = *car;
-                    let cdr = *cdr;
-                    compile_(car, program);
-                    argc += 1;
-                    args = cdr;
-                }
-
-                program.push(Instr::Call(argc));
-            } else {
-                eprintln!("ERROR: Expected a function name but got a list instead");
-            }
+        let mut cur = self;
+        while let Expr::Cons(car, cdr) = cur {
+            res.push(*car);
+            cur = *cdr;
         }
 
-        fn compile_(expr: Expr, program: &mut Vec<Instr>) {
-            match expr {
-                Expr::Atom(value) => {
-                    if let Value::Symbol(ident) = value {
-                        program.push(Instr::LoadGlobal(ident));
-                    } else {
-                        program.push(Instr::Push(value));
-                    }
-                }
-                Expr::Cons(head, tail) => {
-                    compile_list(*head, *tail, program);
-                }
-            }
-        }
-
-        compile_(self, &mut res);
         res
+    }
+
+    fn build_cons(mut exprs: Vec<Expr>) -> Expr {
+        let mut result = Expr::Atom(Value::Nil);
+
+        while let Some(expr) = exprs.pop() {
+            result = Expr::Cons(Box::new(expr), Box::new(result));
+        }
+
+        result
+    }
+
+    pub fn cons(self) -> Result<(Self, Self), CompileError> {
+        match self {
+            Expr::Cons(car, cdr) => Ok((*car, *cdr)),
+            Expr::Atom(_) => Err(CompileError::InvalidArgument(self, expr!(()))),
+        }
+    }
+    pub fn is_cons(&self) -> bool {
+        matches!(self, Expr::Cons(_, _))
+    }
+
+    pub fn atom(self) -> Result<Value, CompileError> {
+        match self {
+            Expr::Cons(_, _) => Err(CompileError::InvalidArgument(self, expr!(atom))),
+            Expr::Atom(atom) => Ok(atom),
+        }
+    }
+    pub fn is_atom(&self) -> bool {
+        matches!(self, Expr::Atom(_))
     }
 }
 
@@ -161,129 +429,221 @@ impl Display for Expr {
     }
 }
 
-// Lexer
+pub enum ParseError {
+    Lex(LexError),
+    UnexpectedToken(Token, TokenKind),
+    EOF,
+}
+
+impl From<LexError> for ParseError {
+    fn from(value: LexError) -> Self {
+        Self::Lex(value)
+    }
+}
+
+pub struct Parser<I>
+where
+    I: Iterator<Item = Result<Token, LexError>>,
+{
+    lexer: Peekable<I>,
+}
+
+impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
+    pub fn new(lexer: I) -> Parser<I> {
+        Parser {
+            lexer: lexer.peekable(),
+        }
+    }
+
+    fn next(&mut self) -> Result<Token, ParseError> {
+        if let Some(token) = self.lexer.next() {
+            match token {
+                Ok(token) => Ok(token),
+                Err(err) => Err(ParseError::Lex(err)),
+            }
+        } else {
+            Err(ParseError::EOF)
+        }
+    }
+    fn peek(&mut self) -> Result<&Token, ParseError> {
+        if let Some(token) = self.lexer.peek() {
+            match token {
+                Ok(token) => Ok(token),
+                Err(err) => Err(ParseError::Lex(err.clone())),
+            }
+        } else {
+            Err(ParseError::EOF)
+        }
+    }
+
+    fn consume(&mut self, kind: TokenKind) -> Result<(), ParseError> {
+        let token = self.next()?;
+        if token.kind == kind {
+            Ok(())
+        } else {
+            Err(ParseError::UnexpectedToken(token, kind))
+        }
+    }
+
+    fn expect(&mut self, kind: TokenKind) -> Result<bool, ParseError> {
+        let token = self.peek()?;
+        Ok(token.kind == kind)
+    }
+
+    fn parse_list(&mut self) -> Result<Expr, ParseError> {
+        let mut exprs: Vec<Expr> = vec![];
+        while !self.expect(TokenKind::CloseParen)? {
+            exprs.push(self.parse_expr()?);
+        }
+        self.consume(TokenKind::CloseParen)?;
+
+        Ok(Expr::build_cons(exprs))
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        let token = self.next()?;
+
+        match token.kind {
+            TokenKind::OpenParen => self.parse_list(),
+            TokenKind::Number(number) => Ok(Expr::Atom(number.into())),
+            TokenKind::String(value) => Ok(Expr::Atom(Value::String(value.clone()))),
+            TokenKind::Symbol(symbol) => Ok(Expr::Atom(Value::Symbol(symbol.clone()))),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn parse(&mut self) -> Result<Expr, ParseError> {
+        self.parse_expr()
+    }
+
+    pub fn is_eof(&mut self) -> bool {
+        self.lexer.peek().is_none()
+    }
+}
+
+// Compiler
 //
 
-#[derive(Debug, PartialEq)]
-pub enum Token {
-    OpenParen,
-    CloseParen,
-    Symbol(String),
-    String(String),
-    Number(f64),
+#[derive(Debug)]
+pub enum CompileError {
+    InvalidArgument(Expr, Expr),
+    InvalidArgumentCount(usize, usize),
 }
 
-fn is_delimiter(c: char) -> bool {
-    c.is_whitespace() || c == '(' || c == ')' || c == '"'
+pub struct Compiler {
+    pub instrs: Vec<Instr>,
 }
 
-pub struct Lexer<'a> {
-    chars: Peekable<Chars<'a>>,
-}
-
-impl<'a> Lexer<'a> {
-    pub fn new(program: &'a str) -> Self {
-        let chars = program.chars().peekable();
-
-        Self { chars }
+impl Compiler {
+    fn emit(&mut self, instr: Instr) {
+        self.instrs.push(instr);
     }
 
-    pub fn parse(self) -> Option<Expr> {
-        fn parse_cons(lexer: &mut Peekable<Lexer>) -> Option<Expr> {
-            match lexer.peek()? {
-                Token::CloseParen => Some(Expr::Atom(Value::Nil)),
-                _ => Some(Expr::Cons(
-                    Box::new(parse_expr(lexer)?),
-                    Box::new(parse_cons(lexer)?),
-                )),
-            }
+    fn compile_lambda(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
+        if args.len() < 2 {
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2));
         }
+        println!("lambda: {args:?}");
 
-        fn parse_expr(lexer: &mut Peekable<Lexer>) -> Option<Expr> {
-            let token = lexer.next()?;
+        let mut args = args.into_iter();
 
-            match token {
-                Token::OpenParen => {
-                    let res;
-                    if let Some(token) = lexer.peek()
-                        && *token != Token::CloseParen
-                    {
-                        res = parse_cons(lexer);
-                    } else {
-                        return None;
-                    }
-                    lexer.next()?; // match ')'
-                    return res;
+        let params_cons = args.next().unwrap();
+
+        let mut params: Vec<String> = vec![];
+        let body: Rc<Expr> = Rc::new(Expr::build_cons(args.collect()));
+        let env = Env::new();
+
+        for param in params_cons.list() {
+            let param = param.atom()?;
+            match param {
+                Value::Symbol(name) => params.push(name),
+                _ => {
+                    return Err(CompileError::InvalidArgument(
+                        Expr::Atom(param),
+                        expr!(symbol),
+                    ));
                 }
-                Token::Number(number) => Some(Expr::Atom(number.into())),
-                Token::String(value) => Some(Expr::Atom(Value::String(value.clone()))),
-                Token::Symbol(symbol) => Some(Expr::Atom(Value::Symbol(symbol.clone()))),
-                _ => unreachable!(),
             }
         }
 
-        let mut lexer = self.peekable();
-        parse_expr(&mut lexer)
+        let closure = Closure { params, body, env };
+
+        self.emit(Instr::Push(Value::Closure(closure)));
+
+        Ok(())
     }
-}
 
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Token;
+    fn compile_define(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
+        if args.len() != 2 {
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2));
+        }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.chars.peek().is_none() {
-            None
+        let mut args = args.into_iter();
+
+        let name = args.next().unwrap();
+        let value = args.next().unwrap();
+
+        if !value.is_atom() {
+            self.compile_list(value)?;
         } else {
-            while let Some(&ch) = self.chars.peek()
-                && ch.is_whitespace()
-            {
-                self.chars.next();
+            self.emit(Instr::Push(value.atom().unwrap()));
+        }
+
+        match name.atom()? {
+            Value::Symbol(symbol) => {
+                self.emit(Instr::Define(symbol));
+                Ok(())
             }
+            other => Err(CompileError::InvalidArgument(
+                Expr::Atom(other),
+                expr!(symbol),
+            )),
+        }
+    }
 
-            let ch = *self.chars.peek().unwrap();
-            if ch == '(' {
-                self.chars.next();
-                Some(Token::OpenParen)
-            } else if ch == ')' {
-                self.chars.next();
-                Some(Token::CloseParen)
-            } else if ch.is_numeric() {
-                let mut res = String::new();
-                while let Some(&ch) = self.chars.peek()
-                    && ch.is_numeric()
-                {
-                    self.chars.next();
-                    res.push(ch);
+    fn compile_call(&mut self, symbol: String, args: Vec<Expr>) -> Result<(), CompileError> {
+        self.emit(Instr::LoadGlobal(symbol));
+        let arity = args.len();
+        for arg in args {
+            if arg.is_atom() {
+                let atom = arg.atom().unwrap();
+                if atom.is_symbol() {
+                    self.emit(Instr::LoadGlobal(atom.symbol().unwrap()));
+                } else {
+                    self.emit(Instr::Push(atom));
                 }
-                let res: f64 = res.parse().unwrap();
-                Some(Token::Number(res))
-            } else if ch == '"' {
-                self.chars.next();
-                let mut res = String::new();
-                while let Some(&ch) = self.chars.peek()
-                    && ch != '"'
-                {
-                    self.chars.next();
-                    res.push(ch);
-                }
-
-                if self.chars.peek().is_none() {
-                    eprintln!("LEXER: no closing quote");
-                    return None;
-                }
-
-                Some(Token::String(res))
             } else {
-                let mut res = String::new();
-                while let Some(&ch) = self.chars.peek()
-                    && !is_delimiter(ch)
-                {
-                    self.chars.next();
-                    res.push(ch);
-                }
-                Some(Token::Symbol(res))
+                self.compile_list(arg)?;
             }
         }
+        self.emit(Instr::Call(arity));
+        Ok(())
+    }
+
+    fn compile_list(&mut self, ast: Expr) -> Result<(), CompileError> {
+        let (head, args) = ast.cons().unwrap();
+        let args = args.list();
+
+        match head.atom()? {
+            Value::Symbol(symbol) => match symbol.as_str() {
+                "define" => {
+                    self.compile_define(args)?;
+                }
+                _ => {
+                    self.compile_call(symbol, args)?;
+                }
+            },
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    pub fn compile(ast: Expr) -> Result<Compiler, CompileError> {
+        let mut program = Compiler { instrs: Vec::new() };
+
+        program.compile_list(ast)?;
+
+        Ok(program)
     }
 }
 
@@ -338,24 +698,47 @@ fn print(args: &[Value]) -> Result<Value, RuntimeError> {
     }
 }
 
-struct Env {
-    globals: HashMap<String, Value>,
+#[derive(Debug, Clone)]
+pub struct Env {
+    values: HashMap<String, Value>,
+    parent: Option<Rc<RefCell<Env>>>,
 }
 
 impl Env {
-    fn default() -> Env {
+    fn new() -> Env {
+        Env {
+            values: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    fn global() -> Env {
         let mut env = Env {
-            globals: HashMap::new(),
+            values: HashMap::new(),
+            parent: None,
         };
 
-        env.globals
-            .insert("+".to_string(), Value::NativeFunction(add));
-        env.globals
-            .insert("*".to_string(), Value::NativeFunction(mult));
-        env.globals
-            .insert("print".to_string(), Value::NativeFunction(print));
+        env.set("+".to_string(), Value::NativeFunction(add));
+        env.set("*".to_string(), Value::NativeFunction(mult));
+        env.set("print".to_string(), Value::NativeFunction(print));
 
         env
+    }
+
+    fn get(&self, name: &str) -> Option<Value> {
+        if let Some(value) = self.values.get(name) {
+            Some(value.clone())
+        } else {
+            if let Some(parent) = &self.parent {
+                parent.borrow().get(name)
+            } else {
+                None
+            }
+        }
+    }
+
+    fn set(&mut self, name: String, value: Value) -> Option<Value> {
+        self.values.insert(name, value)
     }
 }
 
@@ -364,6 +747,7 @@ pub enum Instr {
     Push(Value),
     LoadGlobal(String),
     Call(usize),
+    Define(String),
 }
 
 #[derive(Debug)]
@@ -398,15 +782,15 @@ impl Display for RuntimeError {
 }
 
 pub struct VM {
-    stack: Vec<Value>,
-    env: Env,
+    pub stack: Vec<Value>,
+    pub env: Env,
 }
 
 impl VM {
     pub fn new() -> VM {
         VM {
             stack: Vec::new(),
-            env: Env::default(),
+            env: Env::global(),
         }
     }
 
@@ -431,7 +815,7 @@ impl VM {
     }
 
     fn load_global(&mut self, name: &str) -> Result<(), RuntimeError> {
-        if let Some(global) = self.env.globals.get(name) {
+        if let Some(global) = self.env.get(name) {
             self.stack.push(global.clone());
             Ok(())
         } else {
@@ -444,15 +828,40 @@ impl VM {
         Ok(())
     }
 
+    fn define(&mut self, name: &str) -> Result<(), RuntimeError> {
+        self.env
+            .set(name.to_string(), self.stack.last().unwrap().clone());
+        Ok(())
+    }
+
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
         for inst in program {
             match inst {
                 Instr::Push(value) => self.push(value.clone())?,
                 Instr::LoadGlobal(name) => self.load_global(name)?,
                 Instr::Call(arity) => self.call(*arity)?,
+                Instr::Define(name) => self.define(name)?,
             }
         }
 
         Ok(self.stack.pop().unwrap())
     }
+}
+
+pub fn execute(source_code: &str, vm: &mut VM) -> Result<Value, Error> {
+    let mut ret = Value::Nil;
+    let lexer = Lexer::new(source_code);
+    let mut parser = Parser::new(lexer);
+
+    while !parser.is_eof() {
+        let expression = parser.parse()?;
+        let program = Compiler::compile(expression)?;
+
+        ret = vm.run(&program.instrs)?;
+        // println!("globals: {:?}", vm.env.globals);
+        // println!("stacks: {:?}", vm.stack);
+        // println!("ret: {}", ret)
+    }
+
+    Ok(ret)
 }

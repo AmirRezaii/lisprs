@@ -1,1 +1,3 @@
-(print (+ 3 9 7 2))
+(define x 23)
+(define y 2)
+(print (+ x y))
