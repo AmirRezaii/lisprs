@@ -93,20 +93,18 @@ impl From<RuntimeError> for Error {
 #[derive(Debug, Clone)]
 pub struct Closure {
     params: Vec<String>,
-    body: Rc<Expr>,
-    env: Env,
+    body: Vec<Instr>,
+    env: Rc<RefCell<Env>>,
 }
 
-impl Display for Closure {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "(lambda (")?;
-        for (i, param) in self.params.iter().enumerate() {
-            write!(f, "{param}")?;
-            if i != self.params.len() - 1 {
-                write!(f, " ")?;
-            }
+impl Closure {
+    fn bind(&mut self, parent: Rc<RefCell<Env>>, args: Vec<Value>) {
+        assert!(self.params.len() == args.len());
+        self.env.borrow_mut().parent = Some(parent);
+
+        for (name, value) in self.params.iter().cloned().zip(args.into_iter()) {
+            self.env.borrow_mut().set(name, value);
         }
-        write!(f, ") {})", self.body)
     }
 }
 
@@ -172,12 +170,12 @@ impl From<&str> for Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Value::Symbol(ident) => write!(f, "'{ident}"),
+            Value::Symbol(ident) => write!(f, "{ident}"),
             Value::String(string) => write!(f, "{string}"),
             Value::Number(num) => write!(f, "{num}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
-            Value::Closure(closure) => write!(f, "{closure}"),
             Value::Nil => write!(f, "nil"),
+            Value::Closure(_) => write!(f, "closure"),
         }
     }
 }
@@ -191,16 +189,30 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     OpenParen,
     CloseParen,
     Symbol(String),
     String(String),
     Number(f64),
+    EOF,
 }
 
-#[derive(Debug)]
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::OpenParen => write!(f, "'('"),
+            Self::CloseParen => write!(f, "')'"),
+            Self::Number(_) => write!(f, "number"),
+            Self::Symbol(_) => write!(f, "symbol"),
+            Self::String(_) => write!(f, "string"),
+            Self::EOF => write!(f, "'end of file'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
@@ -220,13 +232,18 @@ fn is_delimiter(c: char) -> bool {
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
     cur: usize,
+    is_eof: bool,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(program: &'a str) -> Self {
         let chars = program.chars().peekable();
 
-        Self { chars, cur: 0 }
+        Self {
+            chars,
+            cur: 0,
+            is_eof: false,
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -238,8 +255,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn is_eof(&mut self) -> bool {
-        self.chars.peek().is_none()
+    pub fn is_eof(&self) -> bool {
+        self.is_eof
     }
 
     fn span(&mut self, size: usize) -> Span {
@@ -348,20 +365,27 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.skip_whitespace();
-        let ch = *self.chars.peek()?;
+        if self.is_eof() {
+            return None;
+        }
 
-        match ch {
-            '(' => self.next_oparen(),
-            ')' => self.next_cparen(),
-            '"' => self.next_string(),
-            _ => {
-                if ch.is_numeric() {
-                    self.next_number()
-                } else {
-                    self.next_symbol()
+        self.skip_whitespace();
+        if let Some(ch) = self.chars.peek() {
+            match *ch {
+                '(' => self.next_oparen(),
+                ')' => self.next_cparen(),
+                '"' => self.next_string(),
+                _ => {
+                    if ch.is_numeric() {
+                        self.next_number()
+                    } else {
+                        self.next_symbol()
+                    }
                 }
             }
+        } else {
+            self.is_eof = true;
+            Some(Ok(Token::new(TokenKind::EOF, self.span(0))))
         }
     }
 }
@@ -432,7 +456,6 @@ impl Display for Expr {
 pub enum ParseError {
     Lex(LexError),
     UnexpectedToken(Token, TokenKind),
-    EOF,
 }
 
 impl From<LexError> for ParseError {
@@ -446,12 +469,14 @@ where
     I: Iterator<Item = Result<Token, LexError>>,
 {
     lexer: Peekable<I>,
+    eof: Option<Token>,
 }
 
 impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
     pub fn new(lexer: I) -> Parser<I> {
         Parser {
             lexer: lexer.peekable(),
+            eof: None,
         }
     }
 
@@ -462,7 +487,8 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
                 Err(err) => Err(ParseError::Lex(err)),
             }
         } else {
-            Err(ParseError::EOF)
+            let eof = self.eof.clone();
+            Ok(eof.unwrap())
         }
     }
     fn peek(&mut self) -> Result<&Token, ParseError> {
@@ -472,16 +498,17 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
                 Err(err) => Err(ParseError::Lex(err.clone())),
             }
         } else {
-            Err(ParseError::EOF)
+            let eof = self.eof.as_ref().unwrap();
+            Ok(eof)
         }
     }
 
-    fn consume(&mut self, kind: TokenKind) -> Result<(), ParseError> {
+    fn consume(&mut self, expected: TokenKind) -> Result<(), ParseError> {
         let token = self.next()?;
-        if token.kind == kind {
+        if token.kind == expected {
             Ok(())
         } else {
-            Err(ParseError::UnexpectedToken(token, kind))
+            Err(ParseError::UnexpectedToken(token, expected))
         }
     }
 
@@ -492,32 +519,31 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
 
     fn parse_list(&mut self) -> Result<Expr, ParseError> {
         let mut exprs: Vec<Expr> = vec![];
-        while !self.expect(TokenKind::CloseParen)? {
-            exprs.push(self.parse_expr()?);
+        while !self.expect(TokenKind::CloseParen)? && !self.expect(TokenKind::EOF)? {
+            exprs.push(self.parse().unwrap()?);
         }
         self.consume(TokenKind::CloseParen)?;
 
         Ok(Expr::build_cons(exprs))
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        let token = self.next()?;
-
-        match token.kind {
-            TokenKind::OpenParen => self.parse_list(),
-            TokenKind::Number(number) => Ok(Expr::Atom(number.into())),
-            TokenKind::String(value) => Ok(Expr::Atom(Value::String(value.clone()))),
-            TokenKind::Symbol(symbol) => Ok(Expr::Atom(Value::Symbol(symbol.clone()))),
-            _ => unreachable!(),
+    fn parse(&mut self) -> Option<Result<Expr, ParseError>> {
+        let token = self.next();
+        match token {
+            Ok(token) => match token.kind {
+                TokenKind::OpenParen => Some(self.parse_list()),
+                TokenKind::Number(number) => Some(Ok(Expr::Atom(number.into()))),
+                TokenKind::String(value) => Some(Ok(Expr::Atom(Value::String(value.clone())))),
+                TokenKind::Symbol(symbol) => Some(Ok(Expr::Atom(Value::Symbol(symbol.clone())))),
+                TokenKind::EOF => None,
+                _ => unreachable!(),
+            },
+            Err(err) => Some(Err(err)),
         }
     }
 
-    pub fn parse(&mut self) -> Result<Expr, ParseError> {
-        self.parse_expr()
-    }
-
     pub fn is_eof(&mut self) -> bool {
-        self.lexer.peek().is_none()
+        self.eof.is_some()
     }
 }
 
@@ -543,14 +569,13 @@ impl Compiler {
         if args.len() < 2 {
             return Err(CompileError::InvalidArgumentCount(args.len(), 2));
         }
-        println!("lambda: {args:?}");
 
         let mut args = args.into_iter();
 
         let params_cons = args.next().unwrap();
 
         let mut params: Vec<String> = vec![];
-        let body: Rc<Expr> = Rc::new(Expr::build_cons(args.collect()));
+        let body: Expr = Expr::build_cons(args.collect());
         let env = Env::new();
 
         for param in params_cons.list() {
@@ -566,7 +591,19 @@ impl Compiler {
             }
         }
 
-        let closure = Closure { params, body, env };
+        // TODO: This needs serious cleaning up
+        let b;
+        if let Some(body) = body.list().into_iter().next() {
+            b = Compiler::compile(body)?.instrs;
+        } else {
+            return Err(CompileError::InvalidArgumentCount(0, 1));
+        }
+
+        let closure = Closure {
+            params,
+            body: b,
+            env: Rc::new(RefCell::new(env)),
+        };
 
         self.emit(Instr::Push(Value::Closure(closure)));
 
@@ -601,8 +638,7 @@ impl Compiler {
         }
     }
 
-    fn compile_call(&mut self, symbol: String, args: Vec<Expr>) -> Result<(), CompileError> {
-        self.emit(Instr::LoadGlobal(symbol));
+    fn compile_call(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
         let arity = args.len();
         for arg in args {
             if arg.is_atom() {
@@ -624,16 +660,26 @@ impl Compiler {
         let (head, args) = ast.cons().unwrap();
         let args = args.list();
 
-        match head.atom()? {
-            Value::Symbol(symbol) => match symbol.as_str() {
-                "define" => {
-                    self.compile_define(args)?;
-                }
-                _ => {
-                    self.compile_call(symbol, args)?;
-                }
+        match head {
+            Expr::Atom(atom) => match atom {
+                Value::Symbol(symbol) => match symbol.as_str() {
+                    "define" => {
+                        self.compile_define(args)?;
+                    }
+                    "lambda" => {
+                        self.compile_lambda(args)?;
+                    }
+                    _ => {
+                        self.emit(Instr::LoadGlobal(symbol));
+                        self.compile_call(args)?;
+                    }
+                },
+                _ => unreachable!(),
             },
-            _ => unreachable!(),
+            head => {
+                self.compile_list(head)?;
+                self.compile_call(args)?;
+            }
         }
         Ok(())
     }
@@ -712,7 +758,7 @@ impl Env {
         }
     }
 
-    fn global() -> Env {
+    fn default() -> Env {
         let mut env = Env {
             values: HashMap::new(),
             parent: None,
@@ -742,7 +788,7 @@ impl Env {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Instr {
     Push(Value),
     LoadGlobal(String),
@@ -783,18 +829,18 @@ impl Display for RuntimeError {
 
 pub struct VM {
     pub stack: Vec<Value>,
-    pub env: Env,
+    pub global: Rc<RefCell<Env>>,
 }
 
 impl VM {
     pub fn new() -> VM {
         VM {
             stack: Vec::new(),
-            env: Env::global(),
+            global: Rc::new(RefCell::new(Env::default())),
         }
     }
 
-    fn call(&mut self, arity: usize) -> Result<(), RuntimeError> {
+    fn call(&mut self, env: &Rc<RefCell<Env>>, arity: usize) -> Result<(), RuntimeError> {
         let mut args: Vec<Value> = vec![];
         for _ in 0..arity {
             if let Some(arg) = self.stack.pop() {
@@ -805,17 +851,24 @@ impl VM {
         }
         args.reverse();
 
-        let f = self.stack.pop().unwrap();
-        if let Value::NativeFunction(fun) = f {
-            self.stack.push(fun(&args[..])?);
-            Ok(())
-        } else {
-            return Err(RuntimeError::NotAFunction(format!("{f}")));
+        let mut f = self.stack.pop().unwrap();
+        match &mut f {
+            Value::NativeFunction(f) => {
+                self.stack.push(f(&args[..])?);
+                Ok(())
+            }
+            Value::Closure(closure) => {
+                closure.bind(Rc::clone(env), args);
+                let res = self.run_(Rc::clone(&closure.env), &closure.body)?;
+                self.stack.push(res);
+                Ok(())
+            }
+            _ => Err(RuntimeError::NotAFunction(format!("{f}"))),
         }
     }
 
-    fn load_global(&mut self, name: &str) -> Result<(), RuntimeError> {
-        if let Some(global) = self.env.get(name) {
+    fn load_global(&mut self, env: &Rc<RefCell<Env>>, name: &str) -> Result<(), RuntimeError> {
+        if let Some(global) = env.borrow().get(name) {
             self.stack.push(global.clone());
             Ok(())
         } else {
@@ -828,23 +881,27 @@ impl VM {
         Ok(())
     }
 
-    fn define(&mut self, name: &str) -> Result<(), RuntimeError> {
-        self.env
+    fn define(&mut self, env: &Rc<RefCell<Env>>, name: &str) -> Result<(), RuntimeError> {
+        env.borrow_mut()
             .set(name.to_string(), self.stack.last().unwrap().clone());
         Ok(())
     }
 
-    pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
+    fn run_(&mut self, env: Rc<RefCell<Env>>, program: &[Instr]) -> Result<Value, RuntimeError> {
         for inst in program {
             match inst {
                 Instr::Push(value) => self.push(value.clone())?,
-                Instr::LoadGlobal(name) => self.load_global(name)?,
-                Instr::Call(arity) => self.call(*arity)?,
-                Instr::Define(name) => self.define(name)?,
+                Instr::LoadGlobal(name) => self.load_global(&env, name)?,
+                Instr::Call(arity) => self.call(&env, *arity)?,
+                Instr::Define(name) => self.define(&env, name)?,
             }
         }
 
         Ok(self.stack.pop().unwrap())
+    }
+
+    pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
+        self.run_(Rc::clone(&self.global), program)
     }
 }
 
@@ -853,14 +910,11 @@ pub fn execute(source_code: &str, vm: &mut VM) -> Result<Value, Error> {
     let lexer = Lexer::new(source_code);
     let mut parser = Parser::new(lexer);
 
-    while !parser.is_eof() {
-        let expression = parser.parse()?;
+    while let Some(expr) = parser.parse() {
+        let expression = expr?;
         let program = Compiler::compile(expression)?;
 
         ret = vm.run(&program.instrs)?;
-        // println!("globals: {:?}", vm.env.globals);
-        // println!("stacks: {:?}", vm.stack);
-        // println!("ret: {}", ret)
     }
 
     Ok(ret)
