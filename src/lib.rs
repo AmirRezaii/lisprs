@@ -3,6 +3,7 @@
 use std::{
     any::type_name_of_val,
     cell::RefCell,
+    cmp::{max, min},
     collections::HashMap,
     fmt::Display,
     iter::{Iterator, Peekable},
@@ -13,9 +14,12 @@ use std::{
 macro_rules! atom {
     ($atom:ident) => {{
         if stringify!($atom) == "nil" {
-            Expr::Atom(Value::Nil)
+            Expr::atom(Value::Nil, Span { start: 0, end: 0 })
         } else {
-            Expr::Atom(Value::Symbol(stringify!($atom).to_string()))
+            Expr::atom(
+                Value::Symbol(stringify!($atom).to_string()),
+                Span { start: 0, end: 0 },
+            )
         }
     }};
     ($atom:literal) => {
@@ -28,13 +32,13 @@ macro_rules! atom {
 
 macro_rules! cons {
     ($left:expr, $right:expr) => {
-        Expr::Cons(Box::new($left), Box::new($right))
+        Expr::cons($left, $right, Span { start: 0, end: 0 })
     };
 }
 
 macro_rules! expr {
     () => {
-        Expr::Atom(Value::Nil)
+        Expr::atom(Value::Nil, Span{start: 0, end: 0})
     };
     ( . $expr:ident ) => {
         atom!($expr)
@@ -90,6 +94,80 @@ impl From<RuntimeError> for Error {
     }
 }
 
+impl Error {
+    pub fn show(self, source_code: &str) {
+        match self {
+            Error::Lex(err) => match err.kind {
+                LexErrorKind::UnclosedString => {
+                    eprintln!("ERROR: Lexer: unclosed string");
+                    err.span.show(source_code);
+                }
+                LexErrorKind::InvalidNumber => {
+                    eprintln!("ERROR: Lexer: invalid number");
+                    err.span.show(source_code);
+                }
+            },
+            Error::Parse(err) => match err {
+                ParseError::UnexpectedToken(token, wanted_kind) => {
+                    eprintln!(
+                        "ERROR: Parser: expected {} but got {}",
+                        wanted_kind, token.kind
+                    );
+                    token.span.show(source_code);
+                }
+                ParseError::ExtraParen(token) => {
+                    eprintln!("ERROR: Parser: extra parenthesis");
+                    token.span.show(source_code);
+                }
+                ParseError::Lex(_) => unreachable!(),
+            },
+            Error::Compile(err) => match err {
+                CompileError::InvalidArgument(got, expected) => {
+                    eprintln!(
+                        "ERROR: Compiler: invalid argument: expected {expected} but got {got}"
+                    );
+                    got.span.show(source_code);
+                }
+                CompileError::InvalidArgumentCount(got, expected, span) => {
+                    eprintln!(
+                        "ERROR: Compiler: invalid argument count: expected {expected} but got {got}"
+                    );
+                    span.show(source_code);
+                }
+                CompileError::UnexpectedCall(expr) => {
+                    eprintln!("ERROR: Compiler: cannot call a function on {expr}");
+                    expr.span.show(source_code);
+                }
+            },
+            Error::Runtime(err) => match err {
+                RuntimeError::UndefinedGlobal(name, span) => {
+                    eprintln!("ERROR: Runtime: underfined global '{}'", name);
+                    span.show(source_code);
+                }
+                RuntimeError::NotAFunction(value, span) => {
+                    eprintln!("ERROR: Runtime: expected a function but got '{}'", value);
+                    span.show(source_code);
+                }
+                RuntimeError::TypeMismatch(given, expected, span) => {
+                    eprintln!(
+                        "ERROR: Runtime: expected type '{}' but got '{}'",
+                        expected, given
+                    );
+                    span.show(source_code);
+                }
+                RuntimeError::WrongNumOfArgs(given, expected, span) => {
+                    eprintln!(
+                        "ERROR: Runtime: expected {} number of arguments but got {}",
+                        expected, given
+                    );
+                    span.show(source_code);
+                }
+                RuntimeError::StackUnderflow => eprintln!("ERROR: Runtime: stack underflow"),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Closure {
     params: Vec<String>,
@@ -98,13 +176,27 @@ pub struct Closure {
 }
 
 impl Closure {
-    fn bind(&mut self, parent: Rc<RefCell<Env>>, args: Vec<Value>) {
-        assert!(self.params.len() == args.len());
+    fn bind(
+        &mut self,
+        parent: Rc<RefCell<Env>>,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        if self.params.len() != args.len() {
+            return Err(RuntimeError::WrongNumOfArgs(
+                args.len(),
+                self.params.len(),
+                span,
+            ));
+        }
+
         self.env.borrow_mut().parent = Some(parent);
 
         for (name, value) in self.params.iter().cloned().zip(args.into_iter()) {
             self.env.borrow_mut().set(name, value);
         }
+
+        Ok(())
     }
 }
 
@@ -113,7 +205,7 @@ pub enum Value {
     Symbol(String),
     String(String),
     Number(f64),
-    NativeFunction(fn(&[Value]) -> Result<Value, RuntimeError>),
+    NativeFunction(fn(&[Value], Span) -> Result<Value, RuntimeError>),
     Closure(Closure),
     Nil,
 }
@@ -187,6 +279,74 @@ impl Display for Value {
 pub struct Span {
     pub start: usize,
     pub end: usize,
+}
+
+impl Span {
+    pub fn join(self, other: Span) -> Span {
+        let start = min(self.start, other.start);
+        let end = max(self.end, other.end);
+        Span { start, end }
+    }
+
+    // TODO: This is horrendous
+    pub fn show(self, text: &str) {
+        if self.start == self.end && self.start == text.len() {
+            let (idx, line) = text.lines().enumerate().last().unwrap();
+            eprint!("{} | ", idx + 1);
+            eprintln!("{line}");
+            eprint!("  | ");
+            for _ in 0..line.len() {
+                eprint!(" ");
+            }
+            eprintln!("^");
+            return;
+        }
+
+        if self.start == self.end {
+            let target = self.start;
+            let mut cur = 0;
+            for (idx, line) in text.lines().enumerate() {
+                let line_start = cur;
+                let line_end = cur + line.len();
+
+                if line_start <= target && target <= line_end {
+                    eprint!("{} | ", idx + 1);
+                    eprintln!("{line}");
+                    eprint!("  | ");
+                    for _ in 0..(target - line_start) {
+                        eprint!(" ");
+                    }
+                    eprint!("^");
+                    eprint!("\n");
+                }
+                cur += line.len() + 1;
+            }
+            return;
+        }
+
+        let mut cur = 0;
+        for (idx, line) in text.lines().enumerate() {
+            let line_start = cur;
+            let line_end = cur + line.len();
+
+            if self.start < line_end && line_start <= self.end {
+                let start = max(line_start, self.start);
+                let end = min(line_end, self.end);
+
+                eprint!("{} | ", idx + 1);
+                eprintln!("{line}");
+                eprint!("  | ");
+                for _ in 0..(start - line_start) {
+                    eprint!(" ");
+                }
+                for _ in (start - line_start)..(end - line_start) {
+                    eprint!("^");
+                }
+                eprint!("\n");
+            }
+            cur += line.len() + 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -394,61 +554,96 @@ impl<'a> Iterator for Lexer<'a> {
 //
 
 #[derive(Debug, Clone)]
-pub enum Expr {
+pub enum ExprKind {
     Atom(Value),
     Cons(Box<Expr>, Box<Expr>),
 }
 
+#[derive(Debug, Clone)]
+pub struct Expr {
+    kind: ExprKind,
+    pub span: Span,
+}
+
 impl Expr {
-    pub fn list(self) -> Vec<Expr> {
-        assert!(self.is_cons());
-        let mut res: Vec<Expr> = vec![];
-
-        let mut cur = self;
-        while let Expr::Cons(car, cdr) = cur {
-            res.push(*car);
-            cur = *cdr;
+    pub fn atom(atom: Value, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Atom(atom),
+            span,
         }
+    }
+    pub fn cons(car: Expr, cdr: Expr, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Cons(Box::new(car), Box::new(cdr)),
+            span,
+        }
+    }
 
+    pub fn list(self) -> Vec<Expr> {
+        let mut res: Vec<Expr> = vec![];
+        if !self.is_nil() {
+            let mut cur = self;
+            while let ExprKind::Cons(car, cdr) = cur.kind {
+                res.push(*car);
+                cur = *cdr;
+            }
+        }
         res
     }
 
-    fn build_cons(mut exprs: Vec<Expr>) -> Expr {
-        let mut result = Expr::Atom(Value::Nil);
+    fn build_cons(mut exprs: Vec<Expr>, end: usize) -> Expr {
+        let end = end - 1;
+        let mut result = Expr::atom(Value::Nil, Span { start: end, end });
 
+        let mut idx = 0;
         while let Some(expr) = exprs.pop() {
-            result = Expr::Cons(Box::new(expr), Box::new(result));
+            let span: Span;
+            if idx == 0 {
+                span = expr.span;
+            } else {
+                span = expr.span.join(result.span);
+            }
+            result = Expr::cons(expr, result, span);
+            idx += 1;
         }
-
         result
     }
 
-    pub fn cons(self) -> Result<(Self, Self), CompileError> {
-        match self {
-            Expr::Cons(car, cdr) => Ok((*car, *cdr)),
-            Expr::Atom(_) => Err(CompileError::InvalidArgument(self, expr!(()))),
+    pub fn is_nil(&self) -> bool {
+        match &self.kind {
+            ExprKind::Atom(atom) => {
+                matches!(atom, Value::Nil)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn into_cons(self) -> Result<(Self, Self), CompileError> {
+        match self.kind {
+            ExprKind::Cons(car, cdr) => Ok((*car, *cdr)),
+            ExprKind::Atom(_) => Err(CompileError::InvalidArgument(self, expr!(()))),
         }
     }
     pub fn is_cons(&self) -> bool {
-        matches!(self, Expr::Cons(_, _))
+        matches!(self.kind, ExprKind::Cons(_, _))
     }
 
-    pub fn atom(self) -> Result<Value, CompileError> {
-        match self {
-            Expr::Cons(_, _) => Err(CompileError::InvalidArgument(self, expr!(atom))),
-            Expr::Atom(atom) => Ok(atom),
+    pub fn into_atom(self) -> Result<Value, CompileError> {
+        match self.kind {
+            ExprKind::Cons(_, _) => Err(CompileError::InvalidArgument(self, expr!(atom))),
+            ExprKind::Atom(atom) => Ok(atom),
         }
     }
     pub fn is_atom(&self) -> bool {
-        matches!(self, Expr::Atom(_))
+        matches!(self.kind, ExprKind::Atom(_))
     }
 }
 
 impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Expr::Atom(atom) => write!(f, "{atom}"),
-            Expr::Cons(left, right) => write!(f, "({left} {right})"),
+        match &self.kind {
+            ExprKind::Atom(atom) => write!(f, "{atom}"),
+            ExprKind::Cons(left, right) => write!(f, "({left} {right})"),
         }
     }
 }
@@ -456,6 +651,7 @@ impl Display for Expr {
 pub enum ParseError {
     Lex(LexError),
     UnexpectedToken(Token, TokenKind),
+    ExtraParen(Token),
 }
 
 impl From<LexError> for ParseError {
@@ -503,10 +699,10 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         }
     }
 
-    fn consume(&mut self, expected: TokenKind) -> Result<(), ParseError> {
+    fn consume(&mut self, expected: TokenKind) -> Result<Token, ParseError> {
         let token = self.next()?;
         if token.kind == expected {
-            Ok(())
+            Ok(token)
         } else {
             Err(ParseError::UnexpectedToken(token, expected))
         }
@@ -517,26 +713,35 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         Ok(token.kind == kind)
     }
 
-    fn parse_list(&mut self) -> Result<Expr, ParseError> {
+    // Span of the list starts from the parenthesis in here
+    fn parse_list(&mut self, start: usize) -> Result<Expr, ParseError> {
         let mut exprs: Vec<Expr> = vec![];
         while !self.expect(TokenKind::CloseParen)? && !self.expect(TokenKind::EOF)? {
             exprs.push(self.parse().unwrap()?);
         }
-        self.consume(TokenKind::CloseParen)?;
+        let close_paren = self.consume(TokenKind::CloseParen)?;
+        let end = close_paren.span.end;
 
-        Ok(Expr::build_cons(exprs))
+        let mut res = Expr::build_cons(exprs, end);
+        res.span = Span { start, end };
+
+        Ok(res)
     }
 
     fn parse(&mut self) -> Option<Result<Expr, ParseError>> {
         let token = self.next();
         match token {
             Ok(token) => match token.kind {
-                TokenKind::OpenParen => Some(self.parse_list()),
-                TokenKind::Number(number) => Some(Ok(Expr::Atom(number.into()))),
-                TokenKind::String(value) => Some(Ok(Expr::Atom(Value::String(value.clone())))),
-                TokenKind::Symbol(symbol) => Some(Ok(Expr::Atom(Value::Symbol(symbol.clone())))),
+                TokenKind::OpenParen => Some(self.parse_list(token.span.start)),
+                TokenKind::CloseParen => Some(Err(ParseError::ExtraParen(token))),
+                TokenKind::Number(number) => Some(Ok(Expr::atom(number.into(), token.span))),
+                TokenKind::String(value) => {
+                    Some(Ok(Expr::atom(Value::String(value.clone()), token.span)))
+                }
+                TokenKind::Symbol(symbol) => {
+                    Some(Ok(Expr::atom(Value::Symbol(symbol.clone()), token.span)))
+                }
                 TokenKind::EOF => None,
-                _ => unreachable!(),
             },
             Err(err) => Some(Err(err)),
         }
@@ -553,7 +758,8 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
 #[derive(Debug)]
 pub enum CompileError {
     InvalidArgument(Expr, Expr),
-    InvalidArgumentCount(usize, usize),
+    InvalidArgumentCount(usize, usize, Span),
+    UnexpectedCall(Expr),
 }
 
 pub struct Compiler {
@@ -561,13 +767,49 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    fn new() -> Compiler {
+        Compiler { instrs: Vec::new() }
+    }
+
     fn emit(&mut self, instr: Instr) {
         self.instrs.push(instr);
     }
 
-    fn compile_lambda(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
+    fn compile_defun(&mut self, args: Expr, span: Span) -> Result<(), CompileError> {
+        let args_span = args.span;
+        let args = args.list();
+
+        if args.len() < 3 {
+            return Err(CompileError::InvalidArgumentCount(args.len(), 3, args_span));
+        }
+
+        let mut args = args.into_iter();
+
+        let name = args.next().unwrap();
+        let closure = Expr::build_cons(args.collect(), span.end);
+        let closure_span = closure.span;
+
+        self.compile_lambda(closure, closure_span)?;
+
+        let name_span = name.span;
+        match name.into_atom()? {
+            Value::Symbol(symbol) => {
+                self.emit(Instr::define(symbol, span));
+                Ok(())
+            }
+            other => Err(CompileError::InvalidArgument(
+                Expr::atom(other, name_span),
+                atom!(symbol),
+            )),
+        }
+    }
+
+    fn compile_lambda(&mut self, args: Expr, span: Span) -> Result<(), CompileError> {
+        let args_span = args.span;
+        let args = args.list();
+
         if args.len() < 2 {
-            return Err(CompileError::InvalidArgumentCount(args.len(), 2));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, args_span));
         }
 
         let mut args = args.into_iter();
@@ -575,44 +817,45 @@ impl Compiler {
         let params_cons = args.next().unwrap();
 
         let mut params: Vec<String> = vec![];
-        let body: Expr = Expr::build_cons(args.collect());
+        let body: Expr = Expr::build_cons(args.collect(), span.end);
         let env = Env::new();
 
         for param in params_cons.list() {
-            let param = param.atom()?;
+            let param_span = param.span;
+            let param = param.into_atom()?;
             match param {
                 Value::Symbol(name) => params.push(name),
                 _ => {
                     return Err(CompileError::InvalidArgument(
-                        Expr::Atom(param),
+                        Expr::atom(param, param_span),
                         expr!(symbol),
                     ));
                 }
             }
         }
 
-        // TODO: This needs serious cleaning up
-        let b;
-        if let Some(body) = body.list().into_iter().next() {
-            b = Compiler::compile(body)?.instrs;
-        } else {
-            return Err(CompileError::InvalidArgumentCount(0, 1));
-        }
+        let body_span = body.span;
+        let mut b = Compiler::new();
+        b.compile_progn(body, body_span)?;
+        let body = b.instrs;
 
         let closure = Closure {
             params,
-            body: b,
+            body,
             env: Rc::new(RefCell::new(env)),
         };
 
-        self.emit(Instr::Push(Value::Closure(closure)));
+        self.emit(Instr::push(Value::Closure(closure), span));
 
         Ok(())
     }
 
-    fn compile_define(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
+    fn compile_define(&mut self, args: Expr, span: Span) -> Result<(), CompileError> {
+        let args_span = args.span;
+        let args = args.list();
+
         if args.len() != 2 {
-            return Err(CompileError::InvalidArgumentCount(args.len(), 2));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, args_span));
         }
 
         let mut args = args.into_iter();
@@ -620,74 +863,102 @@ impl Compiler {
         let name = args.next().unwrap();
         let value = args.next().unwrap();
 
-        if !value.is_atom() {
-            self.compile_list(value)?;
-        } else {
-            self.emit(Instr::Push(value.atom().unwrap()));
-        }
+        self.compile_expr(value)?;
 
-        match name.atom()? {
+        let name_span = name.span;
+        match name.into_atom()? {
             Value::Symbol(symbol) => {
-                self.emit(Instr::Define(symbol));
+                self.emit(Instr::define(symbol, span));
                 Ok(())
             }
             other => Err(CompileError::InvalidArgument(
-                Expr::Atom(other),
+                Expr::atom(other, name_span),
                 expr!(symbol),
             )),
         }
     }
 
-    fn compile_call(&mut self, args: Vec<Expr>) -> Result<(), CompileError> {
-        let arity = args.len();
-        for arg in args {
-            if arg.is_atom() {
-                let atom = arg.atom().unwrap();
-                if atom.is_symbol() {
-                    self.emit(Instr::LoadGlobal(atom.symbol().unwrap()));
-                } else {
-                    self.emit(Instr::Push(atom));
+    fn compile_progn(&mut self, args: Expr, span: Span) -> Result<(), CompileError> {
+        let args = args.list();
+
+        let len = args.len();
+        if len == 0 {
+            self.emit(Instr::push(Value::Nil, span));
+        } else {
+            for (idx, arg) in args.into_iter().enumerate() {
+                self.compile_expr(arg)?;
+
+                if idx < len - 1 {
+                    self.emit(Instr::pop());
                 }
-            } else {
-                self.compile_list(arg)?;
             }
         }
-        self.emit(Instr::Call(arity));
         Ok(())
     }
 
-    fn compile_list(&mut self, ast: Expr) -> Result<(), CompileError> {
-        let (head, args) = ast.cons().unwrap();
+    fn compile_call(&mut self, args: Expr, span: Span) -> Result<(), CompileError> {
         let args = args.list();
 
-        match head {
-            Expr::Atom(atom) => match atom {
+        let arity = args.len();
+        for arg in args {
+            self.compile_expr(arg)?;
+        }
+        self.emit(Instr::call(arity, span));
+        Ok(())
+    }
+
+    fn compile_list(&mut self, head: Expr, args: Expr, span: Span) -> Result<(), CompileError> {
+        match head.kind {
+            ExprKind::Atom(atom) => match atom {
                 Value::Symbol(symbol) => match symbol.as_str() {
                     "define" => {
-                        self.compile_define(args)?;
+                        self.compile_define(args, span)?;
                     }
                     "lambda" => {
-                        self.compile_lambda(args)?;
+                        self.compile_lambda(args, span)?;
+                    }
+                    "progn" => {
+                        self.compile_progn(args, span)?;
+                    }
+                    "defun" => {
+                        self.compile_defun(args, span)?;
                     }
                     _ => {
-                        self.emit(Instr::LoadGlobal(symbol));
-                        self.compile_call(args)?;
+                        self.emit(Instr::load_global(symbol, head.span));
+                        self.compile_call(args, span)?;
                     }
                 },
-                _ => unreachable!(),
+                other => {
+                    return Err(CompileError::UnexpectedCall(Expr::atom(other, head.span)));
+                }
             },
-            head => {
-                self.compile_list(head)?;
-                self.compile_call(args)?;
+            ExprKind::Cons(h, a) => {
+                self.compile_list(*h, *a, head.span)?;
+                self.compile_call(args, span)?;
             }
         }
         Ok(())
+    }
+
+    fn compile_expr(&mut self, expr: Expr) -> Result<(), CompileError> {
+        match expr.kind {
+            ExprKind::Atom(atom) => {
+                match atom {
+                    Value::Symbol(symbol) => {
+                        self.emit(Instr::load_global(symbol, expr.span));
+                    }
+                    other => self.emit(Instr::push(other, expr.span)),
+                }
+                Ok(())
+            }
+            ExprKind::Cons(head, args) => self.compile_list(*head, *args, expr.span),
+        }
     }
 
     pub fn compile(ast: Expr) -> Result<Compiler, CompileError> {
         let mut program = Compiler { instrs: Vec::new() };
 
-        program.compile_list(ast)?;
+        program.compile_expr(ast)?;
 
         Ok(program)
     }
@@ -696,7 +967,7 @@ impl Compiler {
 // VM code
 //
 
-fn add(args: &[Value]) -> Result<Value, RuntimeError> {
+fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut sum: f64 = 0.;
 
     for arg in args {
@@ -706,6 +977,7 @@ fn add(args: &[Value]) -> Result<Value, RuntimeError> {
                 return Err(RuntimeError::TypeMismatch(
                     format!("{other}"),
                     "number".to_string(),
+                    span,
                 ));
             }
         }
@@ -714,7 +986,7 @@ fn add(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Number(sum))
 }
 
-fn mult(args: &[Value]) -> Result<Value, RuntimeError> {
+fn mult(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut res: f64 = 1.;
 
     for arg in args {
@@ -724,6 +996,7 @@ fn mult(args: &[Value]) -> Result<Value, RuntimeError> {
                 return Err(RuntimeError::TypeMismatch(
                     format!("{other}"),
                     "number".to_string(),
+                    span,
                 ));
             }
         }
@@ -732,7 +1005,7 @@ fn mult(args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Number(res))
 }
 
-fn print(args: &[Value]) -> Result<Value, RuntimeError> {
+fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() > 0 {
         for arg in args {
             print!("{} ", arg);
@@ -740,7 +1013,7 @@ fn print(args: &[Value]) -> Result<Value, RuntimeError> {
         print!("\n");
         Ok(args.last().unwrap().clone())
     } else {
-        Err(RuntimeError::WrongNumOfArgs(0, 1))
+        Err(RuntimeError::WrongNumOfArgs(0, 1, span))
     }
 }
 
@@ -789,42 +1062,60 @@ impl Env {
 }
 
 #[derive(Debug, Clone)]
-pub enum Instr {
+pub enum InstrKind {
     Push(Value),
+    Pop,
     LoadGlobal(String),
     Call(usize),
     Define(String),
 }
 
-#[derive(Debug)]
-pub enum RuntimeError {
-    UndefinedGlobal(String),
-    NotAFunction(String),
-    TypeMismatch(String, String),
-    WrongNumOfArgs(usize, usize),
+#[derive(Debug, Clone)]
+pub struct Instr {
+    kind: InstrKind,
+    span: Span,
 }
 
-impl Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::UndefinedGlobal(name) => {
-                write!(f, "Underfined global '{}'", name)
-            }
-            Self::NotAFunction(value) => {
-                write!(f, "Expected a function but got '{}'", value)
-            }
-            Self::TypeMismatch(given, expected) => {
-                write!(f, "Expected type '{}' but got '{}'", expected, given)
-            }
-            Self::WrongNumOfArgs(given, expected) => {
-                write!(
-                    f,
-                    "Expected {} number of arguments but got {}",
-                    expected, given
-                )
-            }
+impl Instr {
+    fn push(value: Value, span: Span) -> Instr {
+        Instr {
+            kind: InstrKind::Push(value),
+            span,
         }
     }
+    fn pop() -> Instr {
+        Instr {
+            kind: InstrKind::Pop,
+            span: Span { start: 0, end: 0 },
+        }
+    }
+    fn load_global(symbol: String, span: Span) -> Instr {
+        Instr {
+            kind: InstrKind::LoadGlobal(symbol),
+            span,
+        }
+    }
+    fn call(arity: usize, span: Span) -> Instr {
+        Instr {
+            kind: InstrKind::Call(arity),
+            span,
+        }
+    }
+    fn define(symbol: String, span: Span) -> Instr {
+        Instr {
+            kind: InstrKind::Define(symbol),
+            span,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RuntimeError {
+    UndefinedGlobal(String, Span),
+    NotAFunction(String, Span),
+    TypeMismatch(String, String, Span),
+    WrongNumOfArgs(usize, usize, Span),
+    StackUnderflow,
 }
 
 pub struct VM {
@@ -840,7 +1131,12 @@ impl VM {
         }
     }
 
-    fn call(&mut self, env: &Rc<RefCell<Env>>, arity: usize) -> Result<(), RuntimeError> {
+    fn call(
+        &mut self,
+        env: &Rc<RefCell<Env>>,
+        arity: usize,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
         let mut args: Vec<Value> = vec![];
         for _ in 0..arity {
             if let Some(arg) = self.stack.pop() {
@@ -854,25 +1150,30 @@ impl VM {
         let mut f = self.stack.pop().unwrap();
         match &mut f {
             Value::NativeFunction(f) => {
-                self.stack.push(f(&args[..])?);
+                self.stack.push(f(&args[..], span)?);
                 Ok(())
             }
             Value::Closure(closure) => {
-                closure.bind(Rc::clone(env), args);
+                closure.bind(Rc::clone(env), args, span)?;
                 let res = self.run_(Rc::clone(&closure.env), &closure.body)?;
                 self.stack.push(res);
                 Ok(())
             }
-            _ => Err(RuntimeError::NotAFunction(format!("{f}"))),
+            _ => Err(RuntimeError::NotAFunction(format!("{f}"), span)),
         }
     }
 
-    fn load_global(&mut self, env: &Rc<RefCell<Env>>, name: &str) -> Result<(), RuntimeError> {
+    fn load_global(
+        &mut self,
+        env: &Rc<RefCell<Env>>,
+        name: &str,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
         if let Some(global) = env.borrow().get(name) {
             self.stack.push(global.clone());
             Ok(())
         } else {
-            return Err(RuntimeError::UndefinedGlobal(name.to_string()));
+            return Err(RuntimeError::UndefinedGlobal(name.to_string(), span));
         }
     }
 
@@ -880,24 +1181,34 @@ impl VM {
         self.stack.push(value.clone());
         Ok(())
     }
+    fn pop(&mut self) -> Result<(), RuntimeError> {
+        self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
+        Ok(())
+    }
 
     fn define(&mut self, env: &Rc<RefCell<Env>>, name: &str) -> Result<(), RuntimeError> {
-        env.borrow_mut()
-            .set(name.to_string(), self.stack.last().unwrap().clone());
+        env.borrow_mut().set(
+            name.to_string(),
+            self.stack
+                .last()
+                .ok_or(RuntimeError::StackUnderflow)?
+                .clone(),
+        );
         Ok(())
     }
 
     fn run_(&mut self, env: Rc<RefCell<Env>>, program: &[Instr]) -> Result<Value, RuntimeError> {
-        for inst in program {
-            match inst {
-                Instr::Push(value) => self.push(value.clone())?,
-                Instr::LoadGlobal(name) => self.load_global(&env, name)?,
-                Instr::Call(arity) => self.call(&env, *arity)?,
-                Instr::Define(name) => self.define(&env, name)?,
+        for instr in program {
+            match &instr.kind {
+                InstrKind::Push(value) => self.push(value.clone())?,
+                InstrKind::Pop => self.pop()?,
+                InstrKind::LoadGlobal(name) => self.load_global(&env, name, instr.span)?,
+                InstrKind::Call(arity) => self.call(&env, *arity, instr.span)?,
+                InstrKind::Define(name) => self.define(&env, name)?,
             }
         }
 
-        Ok(self.stack.pop().unwrap())
+        Ok(self.stack.pop().ok_or(RuntimeError::StackUnderflow)?)
     }
 
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
