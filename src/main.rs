@@ -1,9 +1,10 @@
 use std::fs::read_to_string;
 
-use lisprs::{VM, execute};
+use lisprs::{Context, Vm, execute};
 
 fn main() {
-    let mut vm = VM::new();
+    let mut context = Context::default();
+    let mut vm = Vm::new(&mut context);
 
     let program_src = read_to_string("test.el").unwrap();
 

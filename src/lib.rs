@@ -168,122 +168,6 @@ impl Error {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Closure {
-    params: Vec<String>,
-    body: Vec<Instr>,
-    env: Rc<RefCell<Env>>,
-}
-
-impl Closure {
-    fn bind(
-        &mut self,
-        parent: Rc<RefCell<Env>>,
-        args: Vec<Value>,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        if self.params.len() != args.len() {
-            return Err(RuntimeError::WrongNumOfArgs(
-                args.len(),
-                self.params.len(),
-                span,
-            ));
-        }
-
-        self.env.borrow_mut().parent = Some(parent);
-
-        for (name, value) in self.params.iter().cloned().zip(args.into_iter()) {
-            self.env.borrow_mut().set(name, value);
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Value {
-    Symbol(String),
-    String(String),
-    Number(f64),
-    NativeFunction(fn(&[Value], Span) -> Result<Value, RuntimeError>),
-    Closure(Closure),
-    Nil,
-}
-
-impl Value {
-    pub fn symbol(self) -> Option<String> {
-        use Value::*;
-        match self {
-            Symbol(symbol) => Some(symbol),
-            _ => None,
-        }
-    }
-    pub fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol(_))
-    }
-    pub fn string(self) -> Option<String> {
-        use Value::*;
-        match self {
-            String(string) => Some(string),
-            _ => None,
-        }
-    }
-    pub fn is_string(&self) -> bool {
-        matches!(self, Value::String(_))
-    }
-    pub fn number(self) -> Option<f64> {
-        use Value::*;
-        match self {
-            Number(number) => Some(number),
-            _ => None,
-        }
-    }
-    pub fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_))
-    }
-}
-
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
-        Value::Number(value)
-    }
-}
-impl From<i32> for Value {
-    fn from(value: i32) -> Self {
-        Value::Number(value.into())
-    }
-}
-impl From<&str> for Value {
-    fn from(value: &str) -> Self {
-        Value::String(value.to_string())
-    }
-}
-
-impl From<ExprKind> for Value {
-    fn from(value: ExprKind) -> Self {
-        match value {
-            ExprKind::Nil => Value::Nil,
-            ExprKind::Number(number) => Value::Number(number),
-            ExprKind::String(string) => Value::String(string),
-            ExprKind::Symbol(symbol) => Value::Symbol(symbol),
-            ExprKind::List(_) => todo!(),
-        }
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Value::Symbol(ident) => write!(f, "{ident}"),
-            Value::String(string) => write!(f, "{string}"),
-            Value::Number(num) => write!(f, "{num}"),
-            Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
-            Value::Nil => write!(f, "nil"),
-            Value::Closure(_) => write!(f, "closure"),
-        }
-    }
-}
-
 // Lexer
 //
 
@@ -789,164 +673,367 @@ pub enum CompileError {
     UnexpectedCall(ExprKind, Span),
 }
 
-fn compile_defun(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    if args.len() < 3 {
-        return Err(CompileError::InvalidArgumentCount(
-            args.len(),
-            3,
-            list_span(args),
-        ));
-    }
-
-    let (name, args) = args.split_first().unwrap();
-
-    compile_lambda(args, list_span(args), output)?;
-
-    let symbol = name.into_symbol()?;
-    output.push(Instr::define(symbol.to_string(), span));
-    Ok(())
+struct Compiler<'ctx> {
+    ctx: &'ctx mut Context,
+    program: Vec<Instr>,
 }
 
-fn compile_lambda(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    if args.len() < 2 {
-        return Err(CompileError::InvalidArgumentCount(
-            args.len(),
-            2,
-            list_span(args),
-        ));
-    }
-
-    let (params_cons, args) = args.split_first().unwrap();
-
-    let mut params: Vec<String> = vec![];
-
-    for param in params_cons.into_list()? {
-        let name = param.into_symbol()?;
-        params.push(name.to_string());
-    }
-
-    let body = args;
-    let body_span = list_span(&body);
-    let env = Env::new();
-
-    let mut b: Vec<Instr> = Vec::new();
-    compile_progn(body, body_span, &mut b)?;
-    let body = b;
-
-    let closure = Closure {
-        params,
-        body,
-        env: Rc::new(RefCell::new(env)),
-    };
-
-    output.push(Instr::push(Value::Closure(closure), span));
-
-    Ok(())
-}
-
-fn compile_define(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    if args.len() != 2 {
-        return Err(CompileError::InvalidArgumentCount(
-            args.len(),
-            2,
-            list_span(args),
-        ));
-    }
-
-    let name = &args[0];
-    let value = &args[1];
-
-    compile_expr(value, output)?;
-
-    let symbol = name.into_symbol()?;
-    output.push(Instr::define(symbol.to_string(), span));
-    Ok(())
-}
-
-fn compile_progn(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    let len = args.len();
-    if len == 0 {
-        output.push(Instr::push(Value::Nil, span));
-    } else {
-        for (idx, arg) in args.iter().enumerate() {
-            compile_expr(arg, output)?;
-
-            if idx < len - 1 {
-                output.push(Instr::pop());
-            }
+impl<'ctx> Compiler<'ctx> {
+    fn new(ctx: &'ctx mut Context) -> Self {
+        Self {
+            ctx,
+            program: Vec::new(),
         }
     }
-    Ok(())
-}
 
-fn compile_call(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    let arity = args.len();
-    for arg in args {
-        compile_expr(arg, output)?;
+    fn emit(&mut self, instr: Instr) {
+        self.program.push(instr);
     }
-    output.push(Instr::call(arity, span));
-    Ok(())
-}
 
-fn compile_list(args: &[Expr], span: Span, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    let (head, args) = args.split_first().unwrap();
-
-    match &head.kind {
-        ExprKind::Symbol(symbol) => match symbol.as_str() {
-            "define" => {
-                compile_define(args, span, output)?;
-            }
-            "lambda" => {
-                compile_lambda(args, span, output)?;
-            }
-            "progn" => {
-                compile_progn(args, span, output)?;
-            }
-            "defun" => {
-                compile_defun(args, span, output)?;
-            }
-            _ => {
-                output.push(Instr::load(symbol.clone(), head.span));
-                compile_call(args, span, output)?;
-            }
-        },
-        ExprKind::List(list) => {
-            compile_list(list, head.span, output)?;
-            compile_call(args, span, output)?;
+    fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() < 3 {
+            return Err(CompileError::InvalidArgumentCount(
+                args.len(),
+                3,
+                list_span(args),
+            ));
         }
-        other => {
-            return Err(CompileError::UnexpectedCall(other.clone(), span));
+
+        let (name, args) = args.split_first().unwrap();
+
+        self.compile_lambda(args, list_span(args))?;
+
+        let symbol = name.into_symbol()?;
+        let id = self.ctx.symbols.intern(symbol);
+        self.emit(Instr::define(id, span));
+        Ok(())
+    }
+
+    fn compile_lambda(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() < 2 {
+            return Err(CompileError::InvalidArgumentCount(
+                args.len(),
+                2,
+                list_span(args),
+            ));
+        }
+
+        let (params_cons, args) = args.split_first().unwrap();
+
+        let mut params: Vec<SymbolId> = vec![];
+
+        for param in params_cons.into_list()? {
+            let name = param.into_symbol()?;
+            let name_id = self.ctx.symbols.intern(name);
+            params.push(name_id);
+        }
+
+        let body = args;
+        let body_span = list_span(&body);
+        let env = Env::new();
+
+        let mut b = Compiler::new(self.ctx);
+        b.compile_progn(body, body_span)?;
+        let body = b.program;
+
+        let closure = Closure {
+            params,
+            body,
+            env: Rc::new(RefCell::new(env)),
+        };
+
+        self.emit(Instr::push(Value::Closure(closure), span));
+
+        Ok(())
+    }
+
+    fn compile_define(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() != 2 {
+            return Err(CompileError::InvalidArgumentCount(
+                args.len(),
+                2,
+                list_span(args),
+            ));
+        }
+
+        let name = &args[0];
+        let value = &args[1];
+
+        self.compile_expr(value)?;
+
+        let symbol = name.into_symbol()?;
+        let id = self.ctx.symbols.intern(symbol);
+        self.emit(Instr::define(id, span));
+        Ok(())
+    }
+
+    fn compile_progn(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        let len = args.len();
+        if len == 0 {
+            self.emit(Instr::push(Value::Nil, span));
+        } else {
+            for (idx, arg) in args.iter().enumerate() {
+                self.compile_expr(arg)?;
+
+                if idx < len - 1 {
+                    self.emit(Instr::pop());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_call(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        let arity = args.len();
+        for arg in args {
+            self.compile_expr(arg)?;
+        }
+        self.emit(Instr::call(arity, span));
+        Ok(())
+    }
+
+    fn compile_list(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        let (head, args) = args.split_first().unwrap();
+
+        match &head.kind {
+            ExprKind::Symbol(symbol) => match symbol.as_str() {
+                "define" => {
+                    self.compile_define(args, span)?;
+                }
+                "lambda" => {
+                    self.compile_lambda(args, span)?;
+                }
+                "progn" => {
+                    self.compile_progn(args, span)?;
+                }
+                "defun" => {
+                    self.compile_defun(args, span)?;
+                }
+                _ => {
+                    let symbol_id = self.ctx.symbols.intern(symbol);
+                    self.emit(Instr::load(symbol_id, head.span));
+                    self.compile_call(args, span)?;
+                }
+            },
+            ExprKind::List(list) => {
+                self.compile_list(list, head.span)?;
+                self.compile_call(args, span)?;
+            }
+            other => {
+                return Err(CompileError::UnexpectedCall(other.clone(), span));
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match &expr.kind {
+            ExprKind::Symbol(symbol) => {
+                let id = self.ctx.symbols.intern(symbol);
+                self.emit(Instr::load(id, expr.span));
+                Ok(())
+            }
+            ExprKind::Number(value) => {
+                self.emit(Instr::push(Value::Number(*value), expr.span));
+                Ok(())
+            }
+            ExprKind::String(value) => {
+                self.emit(Instr::push(Value::String(value.clone()), expr.span));
+                Ok(())
+            }
+            ExprKind::Nil => Ok(()),
+            ExprKind::List(list) => self.compile_list(list, expr.span),
         }
     }
-    Ok(())
-}
 
-fn compile_expr(expr: &Expr, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    match &expr.kind {
-        ExprKind::Symbol(symbol) => {
-            output.push(Instr::load(symbol.clone(), expr.span));
-            Ok(())
-        }
-        ExprKind::List(list) => compile_list(list, expr.span, output),
-        ExprKind::Number(value) => {
-            output.push(Instr::push(Value::Number(*value), expr.span));
-            Ok(())
-        }
-        ExprKind::String(value) => {
-            output.push(Instr::push(Value::String(value.clone()), expr.span));
-            Ok(())
-        }
-        ExprKind::Nil => Ok(()),
+    pub fn compile(&mut self, ast: &Expr) -> Result<(), CompileError> {
+        self.compile_expr(ast)?;
+        Ok(())
     }
 }
 
-pub fn compile(ast: &Expr, output: &mut Vec<Instr>) -> Result<(), CompileError> {
-    compile_expr(ast, output)?;
-    Ok(())
-}
-
-// VM code
+// Runtime code
 //
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+struct SymbolId(usize);
+
+#[derive(Debug, Clone)]
+pub struct Closure {
+    params: Vec<SymbolId>,
+    body: Vec<Instr>,
+    env: Rc<RefCell<Env>>,
+}
+
+impl Closure {
+    fn bind(
+        &mut self,
+        parent: Rc<RefCell<Env>>,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        if self.params.len() != args.len() {
+            return Err(RuntimeError::WrongNumOfArgs(
+                args.len(),
+                self.params.len(),
+                span,
+            ));
+        }
+
+        self.env.borrow_mut().parent = Some(parent);
+
+        for (name, value) in self.params.iter().zip(args.into_iter()) {
+            self.env.borrow_mut().set(name.clone(), value);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Value {
+    Symbol(String),
+    String(String),
+    Number(f64),
+    NativeFunction(fn(&[Value], Span) -> Result<Value, RuntimeError>),
+    Closure(Closure),
+    Nil,
+}
+
+impl Value {
+    pub fn symbol(self) -> Option<String> {
+        use Value::*;
+        match self {
+            Symbol(symbol) => Some(symbol),
+            _ => None,
+        }
+    }
+    pub fn is_symbol(&self) -> bool {
+        matches!(self, Value::Symbol(_))
+    }
+    pub fn string(self) -> Option<String> {
+        use Value::*;
+        match self {
+            String(string) => Some(string),
+            _ => None,
+        }
+    }
+    pub fn is_string(&self) -> bool {
+        matches!(self, Value::String(_))
+    }
+    pub fn number(self) -> Option<f64> {
+        use Value::*;
+        match self {
+            Number(number) => Some(number),
+            _ => None,
+        }
+    }
+    pub fn is_number(&self) -> bool {
+        matches!(self, Value::Number(_))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Number(value)
+    }
+}
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Value::Number(value.into())
+    }
+}
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::String(value.to_string())
+    }
+}
+
+impl From<ExprKind> for Value {
+    fn from(value: ExprKind) -> Self {
+        match value {
+            ExprKind::Nil => Value::Nil,
+            ExprKind::Number(number) => Value::Number(number),
+            ExprKind::String(string) => Value::String(string),
+            ExprKind::Symbol(symbol) => Value::Symbol(symbol),
+            ExprKind::List(_) => todo!(),
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Value::Symbol(ident) => write!(f, "{ident}"),
+            Value::String(string) => write!(f, "{string}"),
+            Value::Number(num) => write!(f, "{num}"),
+            Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
+            Value::Nil => write!(f, "nil"),
+            Value::Closure(_) => write!(f, "closure"),
+        }
+    }
+}
+
+struct SymbolTable {
+    names: Vec<String>,
+    lookup: HashMap<String, SymbolId>,
+}
+
+impl SymbolTable {
+    fn new() -> Self {
+        Self {
+            names: Vec::new(),
+            lookup: HashMap::new(),
+        }
+    }
+
+    fn intern(&mut self, name: &str) -> SymbolId {
+        if let Some(id) = self.lookup.get(name) {
+            *id
+        } else {
+            let id = SymbolId(self.names.len());
+            self.names.push(name.to_string());
+            self.lookup.insert(name.to_string(), id);
+            id
+        }
+    }
+
+    fn resolve(&self, id: SymbolId) -> &str {
+        &self.names[id.0]
+    }
+}
+
+pub struct Context {
+    globals: Rc<RefCell<Env>>,
+    symbols: SymbolTable,
+}
+
+impl Context {
+    pub fn new() -> Self {
+        Self {
+            globals: Rc::new(RefCell::new(Env::new())),
+            symbols: SymbolTable::new(),
+        }
+    }
+
+    pub fn define_native(
+        &mut self,
+        symbol: &str,
+        func: fn(&[Value], span: Span) -> Result<Value, RuntimeError>,
+    ) {
+        let mut globals = self.globals.borrow_mut();
+        let id = self.symbols.intern(symbol);
+        globals.set(id, Value::NativeFunction(func));
+    }
+
+    pub fn default() -> Self {
+        let mut res = Self::new();
+        res.define_native("+", add);
+        res.define_native("*", mult);
+        res.define_native("print", print);
+        res
+    }
+}
 
 fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut sum: f64 = 0.;
@@ -1000,7 +1087,7 @@ fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
 
 #[derive(Debug, Clone)]
 pub struct Env {
-    values: HashMap<String, Value>,
+    values: HashMap<SymbolId, Value>,
     parent: Option<Rc<RefCell<Env>>>,
 }
 
@@ -1012,21 +1099,21 @@ impl Env {
         }
     }
 
-    fn default() -> Env {
-        let mut env = Env {
-            values: HashMap::new(),
-            parent: None,
-        };
+    // fn default() -> Env {
+    //     let mut env = Env {
+    //         values: HashMap::new(),
+    //         parent: None,
+    //     };
 
-        env.set("+".to_string(), Value::NativeFunction(add));
-        env.set("*".to_string(), Value::NativeFunction(mult));
-        env.set("print".to_string(), Value::NativeFunction(print));
+    //     env.set("+".to_string(), Value::NativeFunction(add));
+    //     env.set("*".to_string(), Value::NativeFunction(mult));
+    //     env.set("print".to_string(), Value::NativeFunction(print));
 
-        env
-    }
+    //     env
+    // }
 
-    fn get(&self, name: &str) -> Option<Value> {
-        if let Some(value) = self.values.get(name) {
+    fn get(&self, name: SymbolId) -> Option<Value> {
+        if let Some(value) = self.values.get(&name) {
             Some(value.clone())
         } else {
             if let Some(parent) = &self.parent {
@@ -1037,18 +1124,18 @@ impl Env {
         }
     }
 
-    fn set(&mut self, name: String, value: Value) -> Option<Value> {
+    fn set(&mut self, name: SymbolId, value: Value) -> Option<Value> {
         self.values.insert(name, value)
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum InstrKind {
+enum InstrKind {
     Push(Value),
     Pop,
-    Load(String),
+    Load(SymbolId),
     Call(usize),
-    Define(String),
+    Define(SymbolId),
 }
 
 #[derive(Debug, Clone)]
@@ -1070,7 +1157,7 @@ impl Instr {
             span: Span { start: 0, end: 0 },
         }
     }
-    fn load(symbol: String, span: Span) -> Instr {
+    fn load(symbol: SymbolId, span: Span) -> Instr {
         Instr {
             kind: InstrKind::Load(symbol),
             span,
@@ -1082,7 +1169,7 @@ impl Instr {
             span,
         }
     }
-    fn define(symbol: String, span: Span) -> Instr {
+    fn define(symbol: SymbolId, span: Span) -> Instr {
         Instr {
             kind: InstrKind::Define(symbol),
             span,
@@ -1099,16 +1186,16 @@ pub enum RuntimeError {
     StackUnderflow,
 }
 
-pub struct VM {
-    pub stack: Vec<Value>,
-    pub global: Rc<RefCell<Env>>,
+pub struct Vm<'ctx> {
+    stack: Vec<Value>,
+    ctx: &'ctx mut Context,
 }
 
-impl VM {
-    pub fn new() -> VM {
-        VM {
+impl<'ctx> Vm<'ctx> {
+    pub fn new(ctx: &'ctx mut Context) -> Vm<'ctx> {
+        Vm {
             stack: Vec::new(),
-            global: Rc::new(RefCell::new(Env::default())),
+            ctx,
         }
     }
 
@@ -1144,17 +1231,20 @@ impl VM {
         }
     }
 
-    fn load_global(
+    fn load(
         &mut self,
         env: &Rc<RefCell<Env>>,
-        name: &str,
+        name: SymbolId,
         span: Span,
     ) -> Result<(), RuntimeError> {
         if let Some(global) = env.borrow().get(name) {
             self.stack.push(global.clone());
             Ok(())
         } else {
-            return Err(RuntimeError::UndefinedGlobal(name.to_string(), span));
+            return Err(RuntimeError::UndefinedGlobal(
+                self.ctx.symbols.resolve(name).to_string(),
+                span,
+            ));
         }
     }
 
@@ -1167,9 +1257,9 @@ impl VM {
         Ok(())
     }
 
-    fn define(&mut self, env: &Rc<RefCell<Env>>, name: &str) -> Result<(), RuntimeError> {
+    fn define(&mut self, env: &Rc<RefCell<Env>>, name: SymbolId) -> Result<(), RuntimeError> {
         env.borrow_mut().set(
-            name.to_string(),
+            name,
             self.stack
                 .last()
                 .ok_or(RuntimeError::StackUnderflow)?
@@ -1183,9 +1273,9 @@ impl VM {
             match &instr.kind {
                 InstrKind::Push(value) => self.push(value.clone())?,
                 InstrKind::Pop => self.pop()?,
-                InstrKind::Load(name) => self.load_global(&env, name, instr.span)?,
+                InstrKind::Load(name) => self.load(&env, *name, instr.span)?,
                 InstrKind::Call(arity) => self.call(&env, *arity, instr.span)?,
-                InstrKind::Define(name) => self.define(&env, name)?,
+                InstrKind::Define(name) => self.define(&env, *name)?,
             }
         }
 
@@ -1193,21 +1283,25 @@ impl VM {
     }
 
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
-        self.run_(Rc::clone(&self.global), program)
+        self.run_(Rc::clone(&self.ctx.globals), program)
     }
 }
 
-pub fn execute(source_code: &str, vm: &mut VM) -> Result<Value, Error> {
+pub fn execute(source_code: &str, vm: &mut Vm) -> Result<Value, Error> {
     let mut ret = Value::Nil;
     let lexer = Lexer::new(source_code);
     let mut parser = Parser::new(lexer);
 
     while let Some(expr) = parser.parse() {
         let expression = expr?;
-        let mut program: Vec<Instr> = vec![];
-        compile(&expression, &mut program)?;
+        let program: Vec<Instr>;
+        {
+            let mut compiler = Compiler::new(&mut vm.ctx);
+            compiler.compile(&expression)?;
+            program = compiler.program;
+        }
 
-        ret = vm.run(&program[..])?;
+        ret = vm.run(program.as_slice())?;
     }
 
     Ok(ret)
