@@ -1,6 +1,6 @@
 use std::fs::read_to_string;
 
-use lisprs::{Context, RuntimeError, Span, Value, Vm, execute};
+use lisprs::{Context, RuntimeError, Span, Value, execute_module};
 
 fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut sum: f64 = 0.;
@@ -58,11 +58,9 @@ fn main() {
     context.define_native("*", mult);
     context.define_native("print", print);
 
-    let mut vm = Vm::new(&mut context);
-
     let program_src = read_to_string("test.el").unwrap();
 
-    match execute(&program_src, &mut vm) {
+    match execute_module(&program_src, &mut context) {
         Err(err) => err.show(&program_src),
         Ok(value) => println!("result: {value}"),
     }
