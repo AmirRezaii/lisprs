@@ -140,8 +140,8 @@ impl Error {
                 }
             },
             Error::Runtime(err) => match err {
-                RuntimeError::UndefinedGlobal(name, span) => {
-                    eprintln!("ERROR: Runtime: underfined global '{}'", name);
+                RuntimeError::UndefinedVariable(name, span) => {
+                    eprintln!("ERROR: Runtime: undefined variable '{}'", name);
                     span.show(source_code);
                 }
                 RuntimeError::NotAFunction(value, span) => {
@@ -666,6 +666,41 @@ fn list_span(list: &[Expr]) -> Span {
 // Compiler
 //
 
+type ConstId = usize;
+
+#[derive(Debug, Clone)]
+pub struct Chunk {
+    code: Vec<Instr>,
+    constants: Vec<Value>,
+    functions: Vec<FunctionProto>,
+}
+impl Chunk {
+    fn new() -> Self {
+        Self {
+            code: Vec::new(),
+            constants: Vec::new(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn add_const(&mut self, value: Value) -> ConstId {
+        let id = self.constants.len();
+        self.constants.push(value);
+        id
+    }
+}
+
+type FuncId = usize;
+type SlotId = usize;
+
+#[derive(Debug, Copy, Clone)]
+struct Slot {
+    name: SymbolId,
+    id: SlotId,
+}
+
+type Scope = Vec<Slot>;
+
 #[derive(Debug)]
 pub enum CompileError {
     InvalidArgument(ExprKind, ExprKind, Span),
@@ -673,21 +708,57 @@ pub enum CompileError {
     UnexpectedCall(ExprKind, Span),
 }
 
-struct Compiler<'ctx> {
-    ctx: &'ctx mut Context,
-    program: Vec<Instr>,
+struct Compiler<'a> {
+    ctx: &'a mut Context,
+    chunk: &'a mut Chunk,
+    scope_stack: Vec<Scope>,
 }
 
-impl<'ctx> Compiler<'ctx> {
-    fn new(ctx: &'ctx mut Context) -> Self {
+impl<'a> Compiler<'a> {
+    fn new(ctx: &'a mut Context, chunk: &'a mut Chunk) -> Self {
+        let scope_stack = vec![Scope::new()];
         Self {
             ctx,
-            program: Vec::new(),
+            chunk,
+            scope_stack,
         }
     }
 
     fn emit(&mut self, instr: Instr) {
-        self.program.push(instr);
+        self.chunk.code.push(instr);
+    }
+
+    fn add_local(&mut self, name: &str) -> SlotId {
+        assert!(self.scope_stack.len() > 0);
+
+        let id = if let Some(scope) = self
+            .scope_stack
+            .iter()
+            .filter(|scope| !scope.is_empty())
+            .last()
+        {
+            scope.last().unwrap().id + 1
+        } else {
+            0
+        };
+
+        self.scope_stack.last_mut().unwrap().push(Slot {
+            name: self.ctx.symbols.intern(name),
+            id,
+        });
+
+        id
+    }
+    fn resolve_local(&mut self, name: &str) -> Option<Slot> {
+        assert!(self.scope_stack.len() > 0);
+        for scope in self.scope_stack.iter().rev() {
+            for slot in scope {
+                if slot.name == *self.ctx.symbols.lookup.get(name)? {
+                    return Some(*slot);
+                }
+            }
+        }
+        None
     }
 
     fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
@@ -718,31 +789,33 @@ impl<'ctx> Compiler<'ctx> {
             ));
         }
 
-        let (params_cons, args) = args.split_first().unwrap();
+        let (params_expr, body_exprs) = args.split_first().unwrap();
 
-        let mut params: Vec<SymbolId> = vec![];
+        let body_span = list_span(&body_exprs);
 
-        for param in params_cons.into_list()? {
-            let name = param.into_symbol()?;
-            let name_id = self.ctx.symbols.intern(name);
-            params.push(name_id);
+        let mut body_chunk = Chunk::new();
+        // TODO: Right now every function gets it's own scopes stack so upvalues are not found.
+        let mut body_compiler = Compiler::new(self.ctx, &mut body_chunk);
+
+        let mut arity = 0;
+        for expr in params_expr.into_list()? {
+            let name = expr.into_symbol()?;
+            body_compiler.add_local(name);
+            arity += 1;
         }
 
-        let body = args;
-        let body_span = list_span(&body);
-        let env = Env::new();
+        body_compiler.compile_progn(body_exprs, body_span)?;
 
-        let mut b = Compiler::new(self.ctx);
-        b.compile_progn(body, body_span)?;
-        let body = b.program;
-
-        let closure = Closure {
-            params,
-            body,
-            env: Rc::new(RefCell::new(env)),
+        let func = FunctionProto {
+            arity,
+            body: body_chunk,
         };
 
-        self.emit(Instr::push(Value::Closure(closure), span));
+        let func_id = self.chunk.functions.len();
+        self.chunk.functions.push(func);
+
+        // TODO: This shouldn't be closure. It must be make_closure instruction for a function prototype.
+        self.emit(Instr::function(func_id, span));
 
         Ok(())
     }
@@ -770,7 +843,8 @@ impl<'ctx> Compiler<'ctx> {
     fn compile_progn(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         let len = args.len();
         if len == 0 {
-            self.emit(Instr::push(Value::Nil, span));
+            let id = self.chunk.add_const(Value::Nil);
+            self.emit(Instr::push_const(id, span));
         } else {
             for (idx, arg) in args.iter().enumerate() {
                 self.compile_expr(arg)?;
@@ -783,16 +857,17 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    fn compile_call(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+    fn compile_args(&mut self, args: &[Expr]) -> Result<usize, CompileError> {
         let arity = args.len();
         for arg in args {
             self.compile_expr(arg)?;
         }
-        self.emit(Instr::call(arity, span));
-        Ok(())
+        Ok(arity)
     }
 
     fn compile_list(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        self.scope_stack.push(Scope::new());
+
         let (head, args) = args.split_first().unwrap();
 
         match &head.kind {
@@ -810,35 +885,53 @@ impl<'ctx> Compiler<'ctx> {
                     self.compile_defun(args, span)?;
                 }
                 _ => {
-                    let symbol_id = self.ctx.symbols.intern(symbol);
-                    self.emit(Instr::load(symbol_id, head.span));
-                    self.compile_call(args, span)?;
+                    let arity = self.compile_args(args)?;
+
+                    if let Some(local) = self.resolve_local(symbol) {
+                        self.emit(Instr::load_local(local, head.span));
+                    } else {
+                        let symbol_id = self.ctx.symbols.intern(symbol);
+                        self.emit(Instr::load_global(symbol_id, head.span));
+                    }
+
+                    self.emit(Instr::call(arity, span));
                 }
             },
             ExprKind::List(list) => {
+                let arity = self.compile_args(args)?;
+
                 self.compile_list(list, head.span)?;
-                self.compile_call(args, span)?;
+
+                self.emit(Instr::call(arity, span));
             }
             other => {
                 return Err(CompileError::UnexpectedCall(other.clone(), span));
             }
         }
+
+        self.scope_stack.pop();
         Ok(())
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match &expr.kind {
             ExprKind::Symbol(symbol) => {
-                let id = self.ctx.symbols.intern(symbol);
-                self.emit(Instr::load(id, expr.span));
+                if let Some(local) = self.resolve_local(symbol) {
+                    self.emit(Instr::load_local(local, expr.span));
+                } else {
+                    let id = self.ctx.symbols.intern(symbol);
+                    self.emit(Instr::load_global(id, expr.span));
+                }
                 Ok(())
             }
             ExprKind::Number(value) => {
-                self.emit(Instr::push(Value::Number(*value), expr.span));
+                let id = self.chunk.add_const(Value::Number(*value));
+                self.emit(Instr::push_const(id, expr.span));
                 Ok(())
             }
             ExprKind::String(value) => {
-                self.emit(Instr::push(Value::String(value.clone()), expr.span));
+                let id = self.chunk.add_const(Value::String(value.clone()));
+                self.emit(Instr::push_const(id, expr.span));
                 Ok(())
             }
             ExprKind::Nil => Ok(()),
@@ -859,35 +952,10 @@ impl<'ctx> Compiler<'ctx> {
 struct SymbolId(usize);
 
 #[derive(Debug, Clone)]
-pub struct Closure {
-    params: Vec<SymbolId>,
-    body: Vec<Instr>,
-    env: Rc<RefCell<Env>>,
-}
-
-impl Closure {
-    fn bind(
-        &mut self,
-        parent: Rc<RefCell<Env>>,
-        args: Vec<Value>,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        if self.params.len() != args.len() {
-            return Err(RuntimeError::WrongNumOfArgs(
-                args.len(),
-                self.params.len(),
-                span,
-            ));
-        }
-
-        self.env.borrow_mut().parent = Some(parent);
-
-        for (name, value) in self.params.iter().zip(args.into_iter()) {
-            self.env.borrow_mut().set(name.clone(), value);
-        }
-
-        Ok(())
-    }
+pub struct FunctionProto {
+    // params: Vec<SymbolId>,
+    arity: usize,
+    body: Chunk,
 }
 
 #[derive(Debug, Clone)]
@@ -896,7 +964,7 @@ pub enum Value {
     String(String),
     Number(f64),
     NativeFunction(fn(&[Value], Span) -> Result<Value, RuntimeError>),
-    Closure(Closure),
+    Closure(FunctionProto),
     Nil,
 }
 
@@ -1025,64 +1093,6 @@ impl Context {
         let id = self.symbols.intern(symbol);
         globals.set(id, Value::NativeFunction(func));
     }
-
-    pub fn default() -> Self {
-        let mut res = Self::new();
-        res.define_native("+", add);
-        res.define_native("*", mult);
-        res.define_native("print", print);
-        res
-    }
-}
-
-fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    let mut sum: f64 = 0.;
-
-    for arg in args {
-        match arg {
-            Value::Number(n) => sum += n,
-            other => {
-                return Err(RuntimeError::TypeMismatch(
-                    format!("{other}"),
-                    "number".to_string(),
-                    span,
-                ));
-            }
-        }
-    }
-
-    Ok(Value::Number(sum))
-}
-
-fn mult(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    let mut res: f64 = 1.;
-
-    for arg in args {
-        match arg {
-            Value::Number(n) => res *= n,
-            other => {
-                return Err(RuntimeError::TypeMismatch(
-                    format!("{other}"),
-                    "number".to_string(),
-                    span,
-                ));
-            }
-        }
-    }
-
-    Ok(Value::Number(res))
-}
-
-fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    if args.len() > 0 {
-        for arg in args {
-            print!("{} ", arg);
-        }
-        print!("\n");
-        Ok(args.last().unwrap().clone())
-    } else {
-        Err(RuntimeError::WrongNumOfArgs(0, 1, span))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1098,19 +1108,6 @@ impl Env {
             parent: None,
         }
     }
-
-    // fn default() -> Env {
-    //     let mut env = Env {
-    //         values: HashMap::new(),
-    //         parent: None,
-    //     };
-
-    //     env.set("+".to_string(), Value::NativeFunction(add));
-    //     env.set("*".to_string(), Value::NativeFunction(mult));
-    //     env.set("print".to_string(), Value::NativeFunction(print));
-
-    //     env
-    // }
 
     fn get(&self, name: SymbolId) -> Option<Value> {
         if let Some(value) = self.values.get(&name) {
@@ -1131,11 +1128,13 @@ impl Env {
 
 #[derive(Debug, Clone)]
 enum InstrKind {
-    Push(Value),
+    PushConst(ConstId),
     Pop,
-    Load(SymbolId),
+    LoadGlobal(SymbolId),
+    LoadLocal(Slot),
     Call(usize),
     Define(SymbolId),
+    Function(FuncId),
 }
 
 #[derive(Debug, Clone)]
@@ -1145,41 +1144,58 @@ pub struct Instr {
 }
 
 impl Instr {
-    fn push(value: Value, span: Span) -> Instr {
-        Instr {
-            kind: InstrKind::Push(value),
+    fn push_const(value: ConstId, span: Span) -> Self {
+        Self {
+            kind: InstrKind::PushConst(value),
             span,
         }
     }
-    fn pop() -> Instr {
-        Instr {
+    fn pop() -> Self {
+        Self {
             kind: InstrKind::Pop,
             span: Span { start: 0, end: 0 },
         }
     }
-    fn load(symbol: SymbolId, span: Span) -> Instr {
-        Instr {
-            kind: InstrKind::Load(symbol),
+    fn load_global(symbol: SymbolId, span: Span) -> Self {
+        Self {
+            kind: InstrKind::LoadGlobal(symbol),
             span,
         }
     }
-    fn call(arity: usize, span: Span) -> Instr {
-        Instr {
+    fn load_local(slot: Slot, span: Span) -> Self {
+        Self {
+            kind: InstrKind::LoadLocal(slot),
+            span,
+        }
+    }
+    fn call(arity: usize, span: Span) -> Self {
+        Self {
             kind: InstrKind::Call(arity),
             span,
         }
     }
-    fn define(symbol: SymbolId, span: Span) -> Instr {
-        Instr {
+    fn define(symbol: SymbolId, span: Span) -> Self {
+        Self {
             kind: InstrKind::Define(symbol),
+            span,
+        }
+    }
+    fn function(id: FuncId, span: Span) -> Self {
+        Self {
+            kind: InstrKind::Function(id),
             span,
         }
     }
 }
 
+struct CallFrame {
+    ip: usize,
+    base: usize,
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
-    UndefinedGlobal(String, Span),
+    UndefinedVariable(String, Span),
     NotAFunction(String, Span),
     TypeMismatch(String, String, Span),
     WrongNumOfArgs(usize, usize, Span),
@@ -1189,6 +1205,7 @@ pub enum RuntimeError {
 pub struct Vm<'ctx> {
     stack: Vec<Value>,
     ctx: &'ctx mut Context,
+    frames: Vec<CallFrame>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -1196,53 +1213,66 @@ impl<'ctx> Vm<'ctx> {
         Vm {
             stack: Vec::new(),
             ctx,
+            frames: Vec::new(),
         }
     }
 
-    fn call(
-        &mut self,
-        env: &Rc<RefCell<Env>>,
-        arity: usize,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        let mut args: Vec<Value> = vec![];
-        for _ in 0..arity {
-            if let Some(arg) = self.stack.pop() {
-                args.push(arg);
-            } else {
-                args.push(Value::Nil);
-            }
-        }
-        args.reverse();
-
+    fn call(&mut self, arity: usize, span: Span) -> Result<(), RuntimeError> {
         let mut f = self.stack.pop().unwrap();
+
         match &mut f {
             Value::NativeFunction(f) => {
+                let mut args: Vec<Value> = vec![];
+                for _ in 0..arity {
+                    if let Some(arg) = self.stack.pop() {
+                        args.push(arg);
+                    } else {
+                        args.push(Value::Nil);
+                    }
+                }
+
+                args.reverse();
                 self.stack.push(f(&args[..], span)?);
                 Ok(())
             }
             Value::Closure(closure) => {
-                closure.bind(Rc::clone(env), args, span)?;
-                let res = self.run_(Rc::clone(&closure.env), &closure.body)?;
+                // closure.bind(Rc::clone(env), args, span)?;
+                let base = self.stack.len() - closure.arity;
+                self.frames.push(CallFrame { ip: 0, base });
+
+                let res = self.run_(&closure.body)?;
+
+                self.stack.truncate(base);
                 self.stack.push(res);
+
+                self.frames.pop();
+
                 Ok(())
             }
             _ => Err(RuntimeError::NotAFunction(format!("{f}"), span)),
         }
     }
 
-    fn load(
-        &mut self,
-        env: &Rc<RefCell<Env>>,
-        name: SymbolId,
-        span: Span,
-    ) -> Result<(), RuntimeError> {
-        if let Some(global) = env.borrow().get(name) {
+    fn load_global(&mut self, name: SymbolId, span: Span) -> Result<(), RuntimeError> {
+        if let Some(global) = self.ctx.globals.borrow().get(name) {
             self.stack.push(global.clone());
             Ok(())
         } else {
-            return Err(RuntimeError::UndefinedGlobal(
+            return Err(RuntimeError::UndefinedVariable(
                 self.ctx.symbols.resolve(name).to_string(),
+                span,
+            ));
+        }
+    }
+    fn load_local(&mut self, slot: Slot, span: Span) -> Result<(), RuntimeError> {
+        let idx = self.frames.last().unwrap().base + slot.id;
+
+        if let Some(local) = self.stack.get(idx) {
+            self.stack.push(local.clone());
+            Ok(())
+        } else {
+            return Err(RuntimeError::UndefinedVariable(
+                self.ctx.symbols.resolve(slot.name).to_string(),
                 span,
             ));
         }
@@ -1257,8 +1287,8 @@ impl<'ctx> Vm<'ctx> {
         Ok(())
     }
 
-    fn define(&mut self, env: &Rc<RefCell<Env>>, name: SymbolId) -> Result<(), RuntimeError> {
-        env.borrow_mut().set(
+    fn define(&mut self, name: SymbolId) -> Result<(), RuntimeError> {
+        self.ctx.globals.borrow_mut().set(
             name,
             self.stack
                 .last()
@@ -1267,24 +1297,54 @@ impl<'ctx> Vm<'ctx> {
         );
         Ok(())
     }
+    fn function(&mut self, function: FunctionProto) -> Result<(), RuntimeError> {
+        self.stack.push(Value::Closure(function));
+        Ok(())
+    }
 
-    fn run_(&mut self, env: Rc<RefCell<Env>>, program: &[Instr]) -> Result<Value, RuntimeError> {
-        for instr in program {
+    fn run_(&mut self, program: &Chunk) -> Result<Value, RuntimeError> {
+        for instr in &program.code {
             match &instr.kind {
-                InstrKind::Push(value) => self.push(value.clone())?,
+                InstrKind::PushConst(const_id) => {
+                    self.push(program.constants[*const_id].clone())?
+                }
                 InstrKind::Pop => self.pop()?,
-                InstrKind::Load(name) => self.load(&env, *name, instr.span)?,
-                InstrKind::Call(arity) => self.call(&env, *arity, instr.span)?,
-                InstrKind::Define(name) => self.define(&env, *name)?,
+                InstrKind::LoadGlobal(symbol_id) => self.load_global(*symbol_id, instr.span)?,
+                InstrKind::LoadLocal(slot) => self.load_local(*slot, instr.span)?,
+                InstrKind::Call(arity) => self.call(*arity, instr.span)?,
+                InstrKind::Define(name) => self.define(*name)?,
+                InstrKind::Function(id) => self.function(program.functions[*id].clone())?,
             }
         }
 
         Ok(self.stack.pop().ok_or(RuntimeError::StackUnderflow)?)
     }
 
-    pub fn run(&mut self, program: &[Instr]) -> Result<Value, RuntimeError> {
-        self.run_(Rc::clone(&self.ctx.globals), program)
+    pub fn run(&mut self, program: &Chunk) -> Result<Value, RuntimeError> {
+        self.frames.push(CallFrame { ip: 0, base: 0 });
+        let result = self.run_(program)?;
+        self.frames.pop();
+        Ok(result)
     }
+
+    // fn run2(&mut self, program: &Chunk) -> Value {
+    //     loop {
+    //         if self.frames.is_empty() {
+    //             return self.stack.pop().unwrap();
+    //         }
+
+    //         let instr = {
+    //             let frame = self.frames.last_mut().unwrap();
+
+    //             let func = program.functions[frame.function];
+    //             let instruction = func.code[frame.ip].clone();
+
+    //             frame.ip += 1;
+
+    //             instruction
+    //         }
+    //     }
+    // }
 }
 
 pub fn execute(source_code: &str, vm: &mut Vm) -> Result<Value, Error> {
@@ -1294,14 +1354,13 @@ pub fn execute(source_code: &str, vm: &mut Vm) -> Result<Value, Error> {
 
     while let Some(expr) = parser.parse() {
         let expression = expr?;
-        let program: Vec<Instr>;
+        let mut program = Chunk::new();
         {
-            let mut compiler = Compiler::new(&mut vm.ctx);
+            let mut compiler = Compiler::new(&mut vm.ctx, &mut program);
             compiler.compile(&expression)?;
-            program = compiler.program;
         }
 
-        ret = vm.run(program.as_slice())?;
+        ret = vm.run(&program)?;
     }
 
     Ok(ret)
