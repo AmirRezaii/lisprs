@@ -615,10 +615,7 @@ impl Module {
 
     fn add_func(&mut self, arity: usize) -> FuncId {
         let func_id = self.functions.len();
-        self.functions.push(FunctionProto {
-            arity,
-            body: Chunk::new(),
-        });
+        self.functions.push(FunctionProto::new(arity));
         func_id
     }
 
@@ -630,20 +627,41 @@ impl Module {
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionProto {
+struct UpvalueDesc {
+    name: SymbolId,
+    id: Slot,
+    is_local: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionProto {
     arity: usize,
     body: Chunk,
+    upvalues: Vec<UpvalueDesc>,
+}
+impl FunctionProto {
+    fn new(arity: usize) -> Self {
+        Self {
+            arity,
+            body: Chunk::new(),
+            upvalues: Vec::new(),
+        }
+    }
 }
 
 type ConstId = usize;
 
 #[derive(Debug, Clone)]
-pub struct Chunk {
+struct Chunk {
     code: Vec<Instr>,
+    spans: HashMap<usize, Span>,
 }
 impl Chunk {
     fn new() -> Self {
-        Self { code: Vec::new() }
+        Self {
+            code: Vec::new(),
+            spans: HashMap::new(),
+        }
     }
 }
 
@@ -656,6 +674,7 @@ struct Local {
     depth: usize,
 }
 
+#[derive(Debug)]
 struct FuncCompiler {
     func_id: FuncId,
     locals: Vec<Local>,
@@ -705,7 +724,16 @@ impl<'a> Compiler<'a> {
     fn emit(&mut self, instr: Instr) {
         let id = self.current().func_id;
         assert!(id < self.module.functions.len());
-        self.module.functions[id].body.code.push(instr);
+        let body = &mut self.module.functions[id].body;
+        body.code.push(instr);
+    }
+    fn emit_span(&mut self, instr: Instr, span: Span) {
+        let id = self.current().func_id;
+        assert!(id < self.module.functions.len());
+        let body = &mut self.module.functions[id].body;
+        let instr_id = body.code.len();
+        body.code.push(instr);
+        body.spans.insert(instr_id, span);
     }
 
     fn begin_scope(&mut self) {
@@ -742,6 +770,51 @@ impl<'a> Compiler<'a> {
             .rposition(|local| local.name == name)
     }
 
+    fn resolve_upvalue(&mut self, name: SymbolId) -> Option<Slot> {
+        fn resolve_upvalue_(
+            compiler: &mut Compiler,
+            name: SymbolId,
+            fc_idx: usize,
+        ) -> Option<UpvalueDesc> {
+            {
+                let locals = &compiler.functions[fc_idx].locals;
+                for (id, local) in locals.iter().enumerate() {
+                    if name == local.name {
+                        return Some(UpvalueDesc {
+                            name,
+                            id,
+                            is_local: true,
+                        });
+                    }
+                }
+            }
+            if fc_idx == 0 {
+                return None;
+            }
+
+            if let Some(upvalue) = resolve_upvalue_(compiler, name, fc_idx - 1) {
+                let proto_id = compiler.functions[fc_idx].func_id;
+                let func_proto = &mut compiler.module.functions[proto_id];
+
+                let upvalue_id = func_proto.upvalues.len();
+                func_proto.upvalues.push(upvalue);
+
+                Some(UpvalueDesc {
+                    name,
+                    id: upvalue_id,
+                    is_local: false,
+                })
+            } else {
+                None
+            }
+        }
+
+        let upvalue_id = self.module.functions[self.current().func_id].upvalues.len();
+        resolve_upvalue_(self, name, self.functions.len() - 1)?;
+
+        Some(upvalue_id)
+    }
+
     fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if args.len() < 3 {
             return Err(CompileError::InvalidArgumentCount(args.len(), 3, span));
@@ -753,7 +826,7 @@ impl<'a> Compiler<'a> {
 
         let symbol = name.into_symbol()?;
         let id = self.ctx.symbols.intern(symbol);
-        self.emit(Instr::define(id, span));
+        self.emit_span(Instr::Define(id), span);
         Ok(())
     }
 
@@ -779,12 +852,12 @@ impl<'a> Compiler<'a> {
             self.add_local(name);
         }
         self.compile_progn(body_exprs, span)?;
-        self.emit(Instr::ret(span));
+        self.emit_span(Instr::Return, span);
 
         self.functions.pop();
 
         // TODO: This shouldn't be closure. It must be make_closure instruction for a function prototype.
-        self.emit(Instr::function(func_id, span));
+        self.emit_span(Instr::MakeClosure(func_id), span);
 
         self.end_scope();
 
@@ -803,7 +876,7 @@ impl<'a> Compiler<'a> {
 
         let symbol = name.into_symbol()?;
         let id = self.ctx.symbols.intern(symbol);
-        self.emit(Instr::define(id, span));
+        self.emit_span(Instr::Define(id), span);
         Ok(())
     }
 
@@ -811,13 +884,13 @@ impl<'a> Compiler<'a> {
         let len = args.len();
         if len == 0 {
             let id = self.module.add_const(Value::Nil);
-            self.emit(Instr::push_const(id, span));
+            self.emit_span(Instr::PushConst(id), span);
         } else {
             for (idx, arg) in args.iter().enumerate() {
                 self.compile_expr(arg)?;
 
                 if idx < len - 1 {
-                    self.emit(Instr::pop());
+                    self.emit(Instr::Pop);
                 }
             }
         }
@@ -854,12 +927,14 @@ impl<'a> Compiler<'a> {
 
                     let symbol_id = self.ctx.symbols.intern(symbol);
                     if let Some(local) = self.resolve_local(symbol_id) {
-                        self.emit(Instr::load_local(local, head.span));
+                        self.emit_span(Instr::LoadLocal(local), head.span);
+                    } else if let Some(upvalue_id) = self.resolve_upvalue(symbol_id) {
+                        self.emit_span(Instr::LoadUpvalue(upvalue_id), head.span);
                     } else {
-                        self.emit(Instr::load_global(symbol_id, head.span));
+                        self.emit_span(Instr::LoadGlobal(symbol_id), head.span);
                     }
 
-                    self.emit(Instr::call(arity, span));
+                    self.emit_span(Instr::Call(arity), span);
                 }
             },
             ExprKind::List(list) => {
@@ -867,7 +942,7 @@ impl<'a> Compiler<'a> {
 
                 self.compile_list(list, head.span)?;
 
-                self.emit(Instr::call(arity, span));
+                self.emit_span(Instr::Call(arity), span);
             }
             other => {
                 return Err(CompileError::UnexpectedCall(other.clone(), span));
@@ -881,22 +956,24 @@ impl<'a> Compiler<'a> {
             ExprKind::Symbol(symbol) => {
                 let id = self.ctx.symbols.intern(symbol);
                 if let Some(local) = self.resolve_local(id) {
-                    self.emit(Instr::load_local(local, expr.span));
+                    self.emit_span(Instr::LoadLocal(local), expr.span);
+                } else if let Some(upvalue_id) = self.resolve_upvalue(id) {
+                    self.emit_span(Instr::LoadUpvalue(upvalue_id), expr.span);
                 } else {
-                    self.emit(Instr::load_global(id, expr.span));
+                    self.emit_span(Instr::LoadGlobal(id), expr.span);
                 }
             }
             ExprKind::Number(value) => {
                 let id = self.module.add_const(Value::Number(*value));
-                self.emit(Instr::push_const(id, expr.span));
+                self.emit_span(Instr::PushConst(id), expr.span);
             }
             ExprKind::String(value) => {
                 let id = self.module.add_const(Value::String(value.clone()));
-                self.emit(Instr::push_const(id, expr.span));
+                self.emit_span(Instr::PushConst(id), expr.span);
             }
             ExprKind::Nil => {
                 let id = self.module.add_const(Value::Nil);
-                self.emit(Instr::push_const(id, expr.span));
+                self.emit_span(Instr::PushConst(id), expr.span);
             }
             ExprKind::List(list) => self.compile_list(list, expr.span)?,
         }
@@ -905,10 +982,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_module(module: &[Expr], ctx: &'a mut Context) -> Result<Module, CompileError> {
         let mut result = Module::new();
-        result.functions.push(FunctionProto {
-            arity: 0,
-            body: Chunk::new(),
-        });
+        result.functions.push(FunctionProto::new(0));
 
         let mut compiler = Compiler::new(&mut result, ctx);
         compiler.functions.push(FuncCompiler::new(0));
@@ -917,17 +991,17 @@ impl<'a> Compiler<'a> {
         if len == 0 {
             let span = Span { start: 0, end: 0 };
             let id = compiler.module.add_const(Value::Nil);
-            compiler.emit(Instr::push_const(id, span));
-            compiler.emit(Instr::ret(span));
+            compiler.emit_span(Instr::PushConst(id), span);
+            compiler.emit_span(Instr::Return, span);
         } else {
             for (idx, arg) in module.iter().enumerate() {
                 compiler.compile_expr(arg)?;
 
                 if idx < len - 1 {
-                    compiler.emit(Instr::pop());
+                    compiler.emit(Instr::Pop);
                 }
             }
-            compiler.emit(Instr::ret(Span { start: 0, end: 0 }));
+            compiler.emit_span(Instr::Return, Span { start: 0, end: 0 });
         }
         compiler.functions.pop();
 
@@ -944,12 +1018,26 @@ impl<'a> Compiler<'a> {
 struct SymbolId(usize);
 
 #[derive(Debug, Clone)]
+pub struct Closure {
+    proto_id: FuncId,
+    upvalues: Vec<Value>,
+}
+impl Closure {
+    fn new(proto_id: FuncId) -> Self {
+        Self {
+            proto_id,
+            upvalues: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Symbol(String),
     String(String),
     Number(f64),
     NativeFunction(fn(&[Value], Span) -> Result<Value, RuntimeError>),
-    Function(FuncId, usize),
+    Closure(Closure),
     Nil,
 }
 
@@ -1022,7 +1110,7 @@ impl Display for Value {
             Value::Number(num) => write!(f, "{num}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
             Value::Nil => write!(f, "nil"),
-            Value::Function(_, _) => write!(f, "closure"),
+            Value::Closure(_closure) => write!(f, "closure"),
         }
     }
 }
@@ -1082,92 +1170,37 @@ impl Context {
 type Globals = HashMap<SymbolId, Value>;
 
 #[derive(Debug, Clone)]
-enum InstrKind {
+enum Instr {
     PushConst(ConstId),
     Pop,
     LoadGlobal(SymbolId),
+    LoadUpvalue(Slot),
     LoadLocal(Slot),
     Call(usize),
     Define(SymbolId),
-    Function(FuncId),
+    MakeClosure(FuncId),
     Return,
-}
-
-#[derive(Debug, Clone)]
-pub struct Instr {
-    kind: InstrKind,
-    span: Span,
 }
 
 impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
-            InstrKind::Call(arity) => write!(f, "CALL(arity: {arity})")?,
-            InstrKind::Define(symbol_id) => write!(f, "DEFINE(symbol_id: {})", symbol_id.0)?,
-            InstrKind::Function(id) => write!(f, "FUNCTION(func_id: {id})")?,
-            InstrKind::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global.0)?,
-            InstrKind::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
-            InstrKind::Pop => write!(f, "POP")?,
-            InstrKind::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
-            InstrKind::Return => write!(f, "RETURN")?,
+        match self {
+            Instr::Call(arity) => write!(f, "CALL(arity: {arity})")?,
+            Instr::Define(symbol_id) => write!(f, "DEFINE(symbol_id: {})", symbol_id.0)?,
+            Instr::MakeClosure(id) => write!(f, "Closure(func_id: {id})")?,
+            Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global.0)?,
+            Instr::LoadUpvalue(upvalue) => write!(f, "LOAD_UPVALUE(upvalue_id: {})", upvalue)?,
+            Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
+            Instr::Pop => write!(f, "POP")?,
+            Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
+            Instr::Return => write!(f, "RETURN")?,
         }
         Ok(())
     }
 }
 
-impl Instr {
-    fn push_const(value: ConstId, span: Span) -> Self {
-        Self {
-            kind: InstrKind::PushConst(value),
-            span,
-        }
-    }
-    fn pop() -> Self {
-        Self {
-            kind: InstrKind::Pop,
-            span: Span { start: 0, end: 0 },
-        }
-    }
-    fn load_global(symbol: SymbolId, span: Span) -> Self {
-        Self {
-            kind: InstrKind::LoadGlobal(symbol),
-            span,
-        }
-    }
-    fn load_local(slot: Slot, span: Span) -> Self {
-        Self {
-            kind: InstrKind::LoadLocal(slot),
-            span,
-        }
-    }
-    fn call(arity: usize, span: Span) -> Self {
-        Self {
-            kind: InstrKind::Call(arity),
-            span,
-        }
-    }
-    fn define(symbol: SymbolId, span: Span) -> Self {
-        Self {
-            kind: InstrKind::Define(symbol),
-            span,
-        }
-    }
-    fn function(id: FuncId, span: Span) -> Self {
-        Self {
-            kind: InstrKind::Function(id),
-            span,
-        }
-    }
-    fn ret(span: Span) -> Self {
-        Self {
-            kind: InstrKind::Return,
-            span,
-        }
-    }
-}
-
 struct CallFrame {
-    function: FuncId,
+    closure: Closure,
     ip: usize,
     base: usize,
 }
@@ -1215,11 +1248,18 @@ impl<'ctx> Vm<'ctx> {
         }
     }
 
+    fn current(&self) -> &CallFrame {
+        self.frames.last().unwrap()
+    }
+    fn current_mut(&mut self) -> &mut CallFrame {
+        self.frames.last_mut().unwrap()
+    }
+
     fn run(&mut self, module: &Module) -> Result<Value, RuntimeError> {
         assert!(module.functions.len() > 0);
         // entry call frame
         self.frames.push(CallFrame {
-            function: 0, // entry function
+            closure: Closure::new(0), // entry function
             ip: 0,
             base: 0,
         });
@@ -1229,26 +1269,30 @@ impl<'ctx> Vm<'ctx> {
                 return Ok(self.stack.pop().unwrap());
             }
 
-            let (instr, base) = {
-                let frame = self.frames.last_mut().unwrap();
+            let (instr, base, span) = {
+                let frame = self.current_mut();
 
-                let instr = module.functions[frame.function].body.code[frame.ip].clone();
+                let body = &module.functions[frame.closure.proto_id].body;
+                let instr = body.code[frame.ip].clone();
+                let span = body.spans.get(&frame.ip).cloned();
 
                 frame.ip += 1;
 
-                (instr, frame.base)
+                (instr, frame.base, span)
             };
 
-            match instr.kind {
-                InstrKind::PushConst(const_id) => {
-                    self.stack.push(module.constants[const_id].clone())
-                }
-                InstrKind::Pop => {
+            match instr {
+                Instr::PushConst(const_id) => self.stack.push(module.constants[const_id].clone()),
+                Instr::Pop => {
                     self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
                 }
-                InstrKind::LoadGlobal(symbol_id) => self.load_global(symbol_id, instr.span)?,
-                InstrKind::LoadLocal(slot) => self.load_local(base, slot, instr.span)?,
-                InstrKind::Call(argc) => {
+                Instr::LoadGlobal(symbol_id) => self.load_global(symbol_id, span.unwrap())?,
+                Instr::LoadUpvalue(slot) => {
+                    self.stack
+                        .push(self.current().closure.upvalues[slot].clone());
+                }
+                Instr::LoadLocal(slot) => self.load_local(base, slot, span.unwrap())?,
+                Instr::Call(argc) => {
                     let f = self.stack.pop().unwrap();
 
                     match f {
@@ -1263,11 +1307,17 @@ impl<'ctx> Vm<'ctx> {
                             }
 
                             args.reverse();
-                            self.stack.push(f(&args[..], instr.span)?);
+                            self.stack.push(f(&args[..], span.unwrap())?);
                         }
-                        Value::Function(proto_id, arity) => {
+                        Value::Closure(closure) => {
+                            let arity = module.functions[closure.proto_id].arity;
+
                             if argc != arity {
-                                return Err(RuntimeError::WrongNumOfArgs(argc, arity, instr.span));
+                                return Err(RuntimeError::WrongNumOfArgs(
+                                    argc,
+                                    arity,
+                                    span.unwrap(),
+                                ));
                             }
 
                             let base = self
@@ -1277,29 +1327,41 @@ impl<'ctx> Vm<'ctx> {
                                 .ok_or(RuntimeError::StackUnderflow)?;
 
                             self.frames.push(CallFrame {
-                                function: proto_id,
+                                closure,
                                 ip: 0,
                                 base,
                             });
                         }
-                        _ => return Err(RuntimeError::NotAFunction(format!("{f}"), instr.span)),
+                        _ => return Err(RuntimeError::NotAFunction(format!("{f}"), span.unwrap())),
                     }
                 }
-                InstrKind::Define(name) => {
-                    self.ctx.globals.insert(
-                        name,
-                        self.stack
-                            .last()
-                            .ok_or(RuntimeError::StackUnderflow)?
-                            .clone(),
-                    );
+                Instr::Define(name) => {
+                    self.ctx
+                        .globals
+                        .insert(name, self.stack.pop().ok_or(RuntimeError::StackUnderflow)?);
+                    self.stack.push(Value::Nil);
                 }
-                InstrKind::Function(id) => {
+                Instr::MakeClosure(id) => {
                     assert!(id < module.functions.len());
-                    let arity = module.functions[id].arity;
-                    self.stack.push(Value::Function(id, arity));
+                    let mut closure = Closure {
+                        proto_id: id,
+                        upvalues: Vec::new(),
+                    };
+
+                    for upvalue in &module.functions[id].upvalues {
+                        if upvalue.is_local {
+                            closure.upvalues.push(self.stack[base + upvalue.id].clone());
+                            continue;
+                        } else {
+                            closure
+                                .upvalues
+                                .push(self.current().closure.upvalues[upvalue.id].clone());
+                        }
+                    }
+
+                    self.stack.push(Value::Closure(closure));
                 }
-                InstrKind::Return => {
+                Instr::Return => {
                     let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
                     self.stack.truncate(base);
                     self.stack.push(result);
