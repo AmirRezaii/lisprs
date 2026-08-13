@@ -5,6 +5,6 @@
 (defun three (z)
   (lambda (y)
     (lambda (x)
-      (+ x y z))))
+      (* x y z))))
 
 (((three 4) 3) 8)

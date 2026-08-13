@@ -2,10 +2,12 @@
 
 use std::{
     any::type_name_of_val,
+    cell::RefCell,
     cmp::{max, min},
     collections::HashMap,
     fmt::Display,
     iter::{Iterator, Peekable},
+    rc::Rc,
     str::Chars,
 };
 
@@ -136,12 +138,15 @@ impl Span {
 
     // TODO: This is horrendous
     pub fn show(self, text: &str) {
-        if self.start == self.end && self.start == text.len() {
+        let text_count = text.chars().count();
+        if self.start == self.end && self.start == text_count {
             let (idx, line) = text.lines().enumerate().last().unwrap();
+            let line_count = line.chars().count();
+
             eprint!("{} | ", idx + 1);
             eprintln!("{line}");
             eprint!("  | ");
-            for _ in 0..line.len() {
+            for _ in 0..line_count {
                 eprint!(" ");
             }
             eprintln!("^");
@@ -152,8 +157,10 @@ impl Span {
             let target = self.start;
             let mut cur = 0;
             for (idx, line) in text.lines().enumerate() {
+                let line_count = line.chars().count();
+
                 let line_start = cur;
-                let line_end = cur + line.len();
+                let line_end = cur + line_count;
 
                 if line_start <= target && target <= line_end {
                     eprint!("{} | ", idx + 1);
@@ -165,7 +172,7 @@ impl Span {
                     eprint!("^");
                     eprint!("\n");
                 }
-                cur += line.len() + 1;
+                cur += line_count + 1;
             }
             return;
         }
@@ -182,10 +189,10 @@ impl Span {
                 eprint!("{} | ", idx + 1);
                 eprintln!("{line}");
                 eprint!("  | ");
-                for _ in 0..(start - line_start) {
+                for _ in 0..(start - line_start + 1) {
                     eprint!(" ");
                 }
-                for _ in (start - line_start)..(end - line_start) {
+                for _ in (start - line_start + 1)..(end - line_start + 1) {
                     eprint!("^");
                 }
                 eprint!("\n");
@@ -377,7 +384,7 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_eof() {
+        if self.is_eof {
             return None;
         }
 
@@ -628,7 +635,7 @@ impl Module {
 
 #[derive(Debug, Clone)]
 struct UpvalueDesc {
-    name: SymbolId,
+    // name: SymbolId,
     id: Slot,
     is_local: bool,
 }
@@ -781,7 +788,7 @@ impl<'a> Compiler<'a> {
                 for (id, local) in locals.iter().enumerate() {
                     if name == local.name {
                         return Some(UpvalueDesc {
-                            name,
+                            // name,
                             id,
                             is_local: true,
                         });
@@ -800,7 +807,7 @@ impl<'a> Compiler<'a> {
                 func_proto.upvalues.push(upvalue);
 
                 Some(UpvalueDesc {
-                    name,
+                    // name,
                     id: upvalue_id,
                     is_local: false,
                 })
@@ -1020,7 +1027,7 @@ struct SymbolId(usize);
 #[derive(Debug, Clone)]
 pub struct Closure {
     proto_id: FuncId,
-    upvalues: Vec<Value>,
+    upvalues: Vec<UpvalueRef>,
 }
 impl Closure {
     fn new(proto_id: FuncId) -> Self {
@@ -1205,6 +1212,14 @@ struct CallFrame {
     base: usize,
 }
 
+#[derive(Debug, Clone)]
+enum Upvalue {
+    Open(Slot),
+    Closed(Value),
+}
+
+type UpvalueRef = Rc<RefCell<Upvalue>>;
+
 #[derive(Debug)]
 pub enum RuntimeError {
     UndefinedVariable(Span),
@@ -1218,6 +1233,8 @@ pub struct Vm<'ctx> {
     stack: Vec<Value>,
     ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
+
+    open_upvalues: Vec<UpvalueRef>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -1226,6 +1243,7 @@ impl<'ctx> Vm<'ctx> {
             stack: Vec::new(),
             ctx,
             frames: Vec::new(),
+            open_upvalues: Vec::new(),
         }
     }
 
@@ -1288,8 +1306,11 @@ impl<'ctx> Vm<'ctx> {
                 }
                 Instr::LoadGlobal(symbol_id) => self.load_global(symbol_id, span.unwrap())?,
                 Instr::LoadUpvalue(slot) => {
-                    self.stack
-                        .push(self.current().closure.upvalues[slot].clone());
+                    let upvalue = self.current().closure.upvalues[slot].borrow().clone();
+                    match upvalue {
+                        Upvalue::Open(slot) => self.stack.push(self.stack[slot].clone()),
+                        Upvalue::Closed(captured) => self.stack.push(captured),
+                    }
                 }
                 Instr::LoadLocal(slot) => self.load_local(base, slot, span.unwrap())?,
                 Instr::Call(argc) => {
@@ -1350,12 +1371,13 @@ impl<'ctx> Vm<'ctx> {
 
                     for upvalue in &module.functions[id].upvalues {
                         if upvalue.is_local {
-                            closure.upvalues.push(self.stack[base + upvalue.id].clone());
-                            continue;
+                            let upvalue = Rc::new(RefCell::new(Upvalue::Open(base + upvalue.id)));
+                            self.open_upvalues.push(Rc::clone(&upvalue));
+                            closure.upvalues.push(upvalue);
                         } else {
                             closure
                                 .upvalues
-                                .push(self.current().closure.upvalues[upvalue.id].clone());
+                                .push(Rc::clone(&self.current().closure.upvalues[upvalue.id]));
                         }
                     }
 
@@ -1363,6 +1385,24 @@ impl<'ctx> Vm<'ctx> {
                 }
                 Instr::Return => {
                     let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
+
+                    let mut to_remove: Vec<usize> = Vec::new();
+                    for (i, upvalue) in self.open_upvalues.iter().enumerate() {
+                        let mut upvalue = upvalue.borrow_mut();
+                        if let Upvalue::Open(slot) = *upvalue {
+                            if slot >= base {
+                                *upvalue = Upvalue::Closed(self.stack[slot].clone());
+                                to_remove.push(i);
+                            }
+                        } else {
+                            unreachable!();
+                        }
+                    }
+
+                    for i in to_remove {
+                        self.open_upvalues.swap_remove(i);
+                    }
+
                     self.stack.truncate(base);
                     self.stack.push(result);
 
