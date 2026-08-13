@@ -1386,21 +1386,20 @@ impl<'ctx> Vm<'ctx> {
                 Instr::Return => {
                     let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
 
-                    let mut to_remove: Vec<usize> = Vec::new();
-                    for (i, upvalue) in self.open_upvalues.iter().enumerate() {
-                        let mut upvalue = upvalue.borrow_mut();
+                    let mut i: usize = 0;
+                    while i < self.open_upvalues.len() {
+                        let open = Rc::clone(&self.open_upvalues[i]);
+                        let mut upvalue = open.borrow_mut();
                         if let Upvalue::Open(slot) = *upvalue {
                             if slot >= base {
                                 *upvalue = Upvalue::Closed(self.stack[slot].clone());
-                                to_remove.push(i);
+                                self.open_upvalues.swap_remove(i);
+                                continue;
                             }
+                            i += 1;
                         } else {
                             unreachable!();
                         }
-                    }
-
-                    for i in to_remove {
-                        self.open_upvalues.swap_remove(i);
                     }
 
                     self.stack.truncate(base);
