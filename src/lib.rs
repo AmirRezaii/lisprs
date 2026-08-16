@@ -138,21 +138,6 @@ impl Span {
 
     // TODO: This is horrendous
     pub fn show(self, text: &str) {
-        let text_count = text.chars().count();
-        if self.start == self.end && self.start == text_count {
-            let (idx, line) = text.lines().enumerate().last().unwrap();
-            let line_count = line.chars().count();
-
-            eprint!("{} | ", idx + 1);
-            eprintln!("{line}");
-            eprint!("  | ");
-            for _ in 0..line_count {
-                eprint!(" ");
-            }
-            eprintln!("^");
-            return;
-        }
-
         if self.start == self.end {
             let target = self.start;
             let mut cur = 0;
@@ -189,10 +174,10 @@ impl Span {
                 eprint!("{} | ", idx + 1);
                 eprintln!("{line}");
                 eprint!("  | ");
-                for _ in 0..(start - line_start + 1) {
+                for _ in 0..(start - line_start) {
                     eprint!(" ");
                 }
-                for _ in (start - line_start + 1)..(end - line_start + 1) {
+                for _ in (start - line_start)..(end - line_start) {
                     eprint!("^");
                 }
                 eprint!("\n");
@@ -602,7 +587,7 @@ impl Display for Module {
 
         for func in &self.functions {
             writeln!(f, "func(arity: {}):", func.arity)?;
-            for c in &func.body.code {
+            for c in &func.chunk.code {
                 write!(f, "  ")?;
                 writeln!(f, "{c}")?;
             }
@@ -634,7 +619,7 @@ impl Module {
 }
 
 #[derive(Debug, Clone)]
-struct UpvalueDesc {
+struct CaptureSource {
     // name: SymbolId,
     id: Slot,
     is_local: bool,
@@ -643,15 +628,15 @@ struct UpvalueDesc {
 #[derive(Debug, Clone)]
 struct FunctionProto {
     arity: usize,
-    body: Chunk,
-    upvalues: Vec<UpvalueDesc>,
+    chunk: Chunk,
+    captures_src: Vec<CaptureSource>,
 }
 impl FunctionProto {
     fn new(arity: usize) -> Self {
         Self {
             arity,
-            body: Chunk::new(),
-            upvalues: Vec::new(),
+            chunk: Chunk::new(),
+            captures_src: Vec::new(),
         }
     }
 }
@@ -731,13 +716,13 @@ impl<'a> Compiler<'a> {
     fn emit(&mut self, instr: Instr) {
         let id = self.current().func_id;
         assert!(id < self.module.functions.len());
-        let body = &mut self.module.functions[id].body;
+        let body = &mut self.module.functions[id].chunk;
         body.code.push(instr);
     }
     fn emit_span(&mut self, instr: Instr, span: Span) {
         let id = self.current().func_id;
         assert!(id < self.module.functions.len());
-        let body = &mut self.module.functions[id].body;
+        let body = &mut self.module.functions[id].chunk;
         let instr_id = body.code.len();
         body.code.push(instr);
         body.spans.insert(instr_id, span);
@@ -777,38 +762,36 @@ impl<'a> Compiler<'a> {
             .rposition(|local| local.name == name)
     }
 
-    fn resolve_upvalue(&mut self, name: SymbolId) -> Option<Slot> {
-        fn resolve_upvalue_(
+    fn resolve_capture(&mut self, name: SymbolId) -> Option<Slot> {
+        fn resolve_capture_(
             compiler: &mut Compiler,
             name: SymbolId,
             fc_idx: usize,
-        ) -> Option<UpvalueDesc> {
+        ) -> Option<CaptureSource> {
             {
                 let locals = &compiler.functions[fc_idx].locals;
-                for (id, local) in locals.iter().enumerate() {
-                    if name == local.name {
-                        return Some(UpvalueDesc {
-                            // name,
-                            id,
-                            is_local: true,
-                        });
-                    }
+                if let Some(id) = locals.iter().rposition(|local| name == local.name) {
+                    return Some(CaptureSource {
+                        // name,
+                        id,
+                        is_local: true,
+                    });
                 }
             }
             if fc_idx == 0 {
                 return None;
             }
 
-            if let Some(upvalue) = resolve_upvalue_(compiler, name, fc_idx - 1) {
+            if let Some(capture) = resolve_capture_(compiler, name, fc_idx - 1) {
                 let proto_id = compiler.functions[fc_idx].func_id;
                 let func_proto = &mut compiler.module.functions[proto_id];
 
-                let upvalue_id = func_proto.upvalues.len();
-                func_proto.upvalues.push(upvalue);
+                let capture_id = func_proto.captures_src.len();
+                func_proto.captures_src.push(capture);
 
-                Some(UpvalueDesc {
+                Some(CaptureSource {
                     // name,
-                    id: upvalue_id,
+                    id: capture_id,
                     is_local: false,
                 })
             } else {
@@ -816,10 +799,12 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let upvalue_id = self.module.functions[self.current().func_id].upvalues.len();
-        resolve_upvalue_(self, name, self.functions.len() - 1)?;
+        let capture_id = self.module.functions[self.current().func_id]
+            .captures_src
+            .len();
+        resolve_capture_(self, name, self.functions.len() - 1)?;
 
-        Some(upvalue_id)
+        Some(capture_id)
     }
 
     fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
@@ -846,8 +831,6 @@ impl<'a> Compiler<'a> {
 
         let (params_expr, body_exprs) = args.split_first().unwrap();
 
-        // TODO: Right now every function gets it's own scopes stack so upvalues are not found.
-
         let params = params_expr.into_list()?;
         let arity = params.len();
 
@@ -863,7 +846,6 @@ impl<'a> Compiler<'a> {
 
         self.functions.pop();
 
-        // TODO: This shouldn't be closure. It must be make_closure instruction for a function prototype.
         self.emit_span(Instr::MakeClosure(func_id), span);
 
         self.end_scope();
@@ -904,6 +886,37 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn compile_let_rec(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        self.begin_scope();
+        if args.len() < 2 {
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
+        }
+
+        let first_slot = self.current().locals.len();
+
+        let (locals_exprs, body_exprs) = args.split_first().unwrap();
+        let locals_exprs = locals_exprs.into_list()?;
+
+        for local in locals_exprs {
+            let span = local.span;
+            let local = local.into_list()?;
+            if local.len() != 2 {
+                return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
+            }
+
+            let name = &local[0];
+            let value = &local[1];
+
+            self.compile_expr(value)?;
+            self.add_local(name.into_symbol()?);
+        }
+        self.compile_progn(body_exprs, span)?;
+        self.emit_span(Instr::ExitScope(first_slot), span);
+
+        self.end_scope();
+        Ok(())
+    }
+
     fn compile_args(&mut self, args: &[Expr]) -> Result<usize, CompileError> {
         let arity = args.len();
         for arg in args {
@@ -929,14 +942,17 @@ impl<'a> Compiler<'a> {
                 "defun" => {
                     self.compile_defun(args, span)?;
                 }
+                "let*" => {
+                    self.compile_let_rec(args, span)?;
+                }
                 _ => {
                     let arity = self.compile_args(args)?;
 
                     let symbol_id = self.ctx.symbols.intern(symbol);
                     if let Some(local) = self.resolve_local(symbol_id) {
                         self.emit_span(Instr::LoadLocal(local), head.span);
-                    } else if let Some(upvalue_id) = self.resolve_upvalue(symbol_id) {
-                        self.emit_span(Instr::LoadUpvalue(upvalue_id), head.span);
+                    } else if let Some(capture_id) = self.resolve_capture(symbol_id) {
+                        self.emit_span(Instr::LoadCapture(capture_id), head.span);
                     } else {
                         self.emit_span(Instr::LoadGlobal(symbol_id), head.span);
                     }
@@ -964,8 +980,8 @@ impl<'a> Compiler<'a> {
                 let id = self.ctx.symbols.intern(symbol);
                 if let Some(local) = self.resolve_local(id) {
                     self.emit_span(Instr::LoadLocal(local), expr.span);
-                } else if let Some(upvalue_id) = self.resolve_upvalue(id) {
-                    self.emit_span(Instr::LoadUpvalue(upvalue_id), expr.span);
+                } else if let Some(capture_id) = self.resolve_capture(id) {
+                    self.emit_span(Instr::LoadCapture(capture_id), expr.span);
                 } else {
                     self.emit_span(Instr::LoadGlobal(id), expr.span);
                 }
@@ -1012,8 +1028,6 @@ impl<'a> Compiler<'a> {
         }
         compiler.functions.pop();
 
-        println!("{result}");
-
         Ok(result)
     }
 }
@@ -1024,16 +1038,19 @@ impl<'a> Compiler<'a> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct SymbolId(usize);
 
+type StackIndex = usize;
+type CaptureIndex = usize;
+
 #[derive(Debug, Clone)]
 pub struct Closure {
     proto_id: FuncId,
-    upvalues: Vec<UpvalueRef>,
+    captures: Vec<CaptureCell>,
 }
 impl Closure {
     fn new(proto_id: FuncId) -> Self {
         Self {
             proto_id,
-            upvalues: Vec::new(),
+            captures: Vec::new(),
         }
     }
 }
@@ -1181,11 +1198,13 @@ enum Instr {
     PushConst(ConstId),
     Pop,
     LoadGlobal(SymbolId),
-    LoadUpvalue(Slot),
+    LoadCapture(CaptureIndex),
     LoadLocal(Slot),
+    // SetLocal(Slot),
     Call(usize),
     Define(SymbolId),
     MakeClosure(FuncId),
+    ExitScope(Slot),
     Return,
 }
 
@@ -1196,10 +1215,12 @@ impl Display for Instr {
             Instr::Define(symbol_id) => write!(f, "DEFINE(symbol_id: {})", symbol_id.0)?,
             Instr::MakeClosure(id) => write!(f, "Closure(func_id: {id})")?,
             Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global.0)?,
-            Instr::LoadUpvalue(upvalue) => write!(f, "LOAD_UPVALUE(upvalue_id: {})", upvalue)?,
+            Instr::LoadCapture(capture) => write!(f, "LOAD_CAPTURE(capture_id: {})", capture)?,
             Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
+            // Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
             Instr::Pop => write!(f, "POP")?,
             Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
+            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot}")?,
             Instr::Return => write!(f, "RETURN")?,
         }
         Ok(())
@@ -1213,12 +1234,12 @@ struct CallFrame {
 }
 
 #[derive(Debug, Clone)]
-enum Upvalue {
-    Open(Slot),
+enum Capture {
+    Open(StackIndex),
     Closed(Value),
 }
 
-type UpvalueRef = Rc<RefCell<Upvalue>>;
+type CaptureCell = Rc<RefCell<Capture>>;
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -1234,7 +1255,7 @@ pub struct Vm<'ctx> {
     ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
 
-    open_upvalues: Vec<UpvalueRef>,
+    open_captures: Vec<CaptureCell>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -1243,26 +1264,7 @@ impl<'ctx> Vm<'ctx> {
             stack: Vec::new(),
             ctx,
             frames: Vec::new(),
-            open_upvalues: Vec::new(),
-        }
-    }
-
-    fn load_global(&mut self, name: SymbolId, span: Span) -> Result<(), RuntimeError> {
-        if let Some(global) = self.ctx.globals.get(&name) {
-            self.stack.push(global.clone());
-            Ok(())
-        } else {
-            return Err(RuntimeError::UndefinedVariable(span));
-        }
-    }
-    fn load_local(&mut self, base: usize, slot: Slot, span: Span) -> Result<(), RuntimeError> {
-        let idx = base + slot;
-
-        if let Some(local) = self.stack.get(idx) {
-            self.stack.push(local.clone());
-            Ok(())
-        } else {
-            return Err(RuntimeError::UndefinedVariable(span));
+            open_captures: Vec::new(),
         }
     }
 
@@ -1271,6 +1273,30 @@ impl<'ctx> Vm<'ctx> {
     }
     fn current_mut(&mut self) -> &mut CallFrame {
         self.frames.last_mut().unwrap()
+    }
+
+    fn exit_scope(&mut self, base: usize) -> Result<(), RuntimeError> {
+        let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
+
+        let mut i: usize = 0;
+        while i < self.open_captures.len() {
+            let open = Rc::clone(&self.open_captures[i]);
+            let mut capture = open.borrow_mut();
+            if let Capture::Open(stack_id) = *capture {
+                if stack_id >= base {
+                    *capture = Capture::Closed(self.stack[stack_id].clone());
+                    self.open_captures.swap_remove(i);
+                    continue;
+                }
+                i += 1;
+            } else {
+                unreachable!();
+            }
+        }
+
+        self.stack.truncate(base);
+        self.stack.push(result);
+        Ok(())
     }
 
     fn run(&mut self, module: &Module) -> Result<Value, RuntimeError> {
@@ -1290,7 +1316,7 @@ impl<'ctx> Vm<'ctx> {
             let (instr, base, span) = {
                 let frame = self.current_mut();
 
-                let body = &module.functions[frame.closure.proto_id].body;
+                let body = &module.functions[frame.closure.proto_id].chunk;
                 let instr = body.code[frame.ip].clone();
                 let span = body.spans.get(&frame.ip).cloned();
 
@@ -1304,15 +1330,38 @@ impl<'ctx> Vm<'ctx> {
                 Instr::Pop => {
                     self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
                 }
-                Instr::LoadGlobal(symbol_id) => self.load_global(symbol_id, span.unwrap())?,
-                Instr::LoadUpvalue(slot) => {
-                    let upvalue = self.current().closure.upvalues[slot].borrow().clone();
-                    match upvalue {
-                        Upvalue::Open(slot) => self.stack.push(self.stack[slot].clone()),
-                        Upvalue::Closed(captured) => self.stack.push(captured),
+                Instr::LoadGlobal(symbol_id) => {
+                    if let Some(global) = self.ctx.globals.get(&symbol_id) {
+                        self.stack.push(global.clone());
+                    } else {
+                        return Err(RuntimeError::UndefinedVariable(span.unwrap()));
                     }
                 }
-                Instr::LoadLocal(slot) => self.load_local(base, slot, span.unwrap())?,
+                Instr::LoadCapture(capture_id) => {
+                    let capture = self.current().closure.captures[capture_id].borrow().clone();
+                    match capture {
+                        Capture::Open(stack_id) => self.stack.push(self.stack[stack_id].clone()),
+                        Capture::Closed(captured) => self.stack.push(captured),
+                    }
+                }
+                Instr::LoadLocal(slot) => {
+                    let idx = base + slot;
+
+                    if let Some(local) = self.stack.get(idx) {
+                        self.stack.push(local.clone());
+                    } else {
+                        return Err(RuntimeError::UndefinedVariable(span.unwrap()));
+                    }
+                }
+                // Instr::SetLocal(slot) => {
+                //     let idx = base + slot;
+
+                //     if let Some(value) = self.stack.pop() {
+                //         self.stack[idx] = value;
+                //     } else {
+                //         return Err(RuntimeError::StackUnderflow);
+                //     }
+                // }
                 Instr::Call(argc) => {
                     let f = self.stack.pop().unwrap();
 
@@ -1366,45 +1415,28 @@ impl<'ctx> Vm<'ctx> {
                     assert!(id < module.functions.len());
                     let mut closure = Closure {
                         proto_id: id,
-                        upvalues: Vec::new(),
+                        captures: Vec::new(),
                     };
 
-                    for upvalue in &module.functions[id].upvalues {
-                        if upvalue.is_local {
-                            let upvalue = Rc::new(RefCell::new(Upvalue::Open(base + upvalue.id)));
-                            self.open_upvalues.push(Rc::clone(&upvalue));
-                            closure.upvalues.push(upvalue);
+                    for capture in &module.functions[id].captures_src {
+                        if capture.is_local {
+                            let capture = Rc::new(RefCell::new(Capture::Open(base + capture.id)));
+                            self.open_captures.push(Rc::clone(&capture));
+                            closure.captures.push(capture);
                         } else {
                             closure
-                                .upvalues
-                                .push(Rc::clone(&self.current().closure.upvalues[upvalue.id]));
+                                .captures
+                                .push(Rc::clone(&self.current().closure.captures[capture.id]));
                         }
                     }
 
                     self.stack.push(Value::Closure(closure));
                 }
+                Instr::ExitScope(slot) => {
+                    self.exit_scope(base + slot)?;
+                }
                 Instr::Return => {
-                    let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
-
-                    let mut i: usize = 0;
-                    while i < self.open_upvalues.len() {
-                        let open = Rc::clone(&self.open_upvalues[i]);
-                        let mut upvalue = open.borrow_mut();
-                        if let Upvalue::Open(slot) = *upvalue {
-                            if slot >= base {
-                                *upvalue = Upvalue::Closed(self.stack[slot].clone());
-                                self.open_upvalues.swap_remove(i);
-                                continue;
-                            }
-                            i += 1;
-                        } else {
-                            unreachable!();
-                        }
-                    }
-
-                    self.stack.truncate(base);
-                    self.stack.push(result);
-
+                    self.exit_scope(base)?;
                     self.frames.pop();
                 }
             }
@@ -1429,6 +1461,7 @@ pub fn execute_module(source_code: &str, ctx: &mut Context) -> Result<Value, Err
     let mut vm = Vm::new(ctx);
     let ast = parse_module(source_code)?;
     let module = Compiler::compile_module(&ast, vm.ctx)?;
+    println!("{module}");
 
     Ok(vm.run(&module)?)
 }
