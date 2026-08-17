@@ -1,6 +1,9 @@
-use std::fs::read_to_string;
+use std::{
+    fs::read_to_string,
+    io::{Write, stdin, stdout},
+};
 
-use lisprs::{Context, RuntimeError, Span, Value, execute_module};
+use lisprs::{Context, RuntimeError, RuntimeErrorKind, Span, Value, execute_module};
 
 fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut sum: f64 = 0.;
@@ -9,9 +12,8 @@ fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
         match arg {
             Value::Number(n) => sum += n,
             other => {
-                return Err(RuntimeError::TypeMismatch(
-                    format!("{other}"),
-                    "number".to_string(),
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(format!("{other}"), "number".to_string()),
                     span,
                 ));
             }
@@ -28,9 +30,8 @@ fn mult(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
         match arg {
             Value::Number(n) => res *= n,
             other => {
-                return Err(RuntimeError::TypeMismatch(
-                    format!("{other}"),
-                    "number".to_string(),
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::TypeMismatch(format!("{other}"), "number".to_string()),
                     span,
                 ));
             }
@@ -48,7 +49,44 @@ fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
         print!("\n");
         Ok(args.last().unwrap().clone())
     } else {
-        Err(RuntimeError::WrongNumOfArgs(0, 1, span))
+        Err(RuntimeError::new(
+            RuntimeErrorKind::WrongNumOfArgs(0, 1),
+            span,
+        ))
+    }
+}
+
+fn repl(mut context: Context) {
+    let mut src = String::new();
+    print!("> ");
+    stdout().flush().unwrap();
+    while let Ok(_) = stdin().read_line(&mut src) {
+        if src == "exit\n" {
+            break;
+        }
+
+        match execute_module(&src, &mut context) {
+            Err(err) => {
+                eprintln!("ERROR: {err}");
+                err.span.show(&src);
+            }
+            Ok(value) => println!("result: {value}"),
+        }
+        src.clear();
+        print!("> ");
+        stdout().flush().unwrap();
+    }
+}
+
+fn file(mut context: Context, path: &str) {
+    let src = read_to_string(path).unwrap();
+
+    match execute_module(&src, &mut context) {
+        Err(err) => {
+            eprintln!("ERROR: {err}");
+            err.span.show(&src);
+        }
+        Ok(value) => println!("result: {value}"),
     }
 }
 
@@ -58,10 +96,9 @@ fn main() {
     context.define_native("*", mult);
     context.define_native("print", print);
 
-    let program_src = read_to_string("test.el").unwrap();
-
-    match execute_module(&program_src, &mut context) {
-        Err(err) => err.show(&program_src),
-        Ok(value) => println!("result: {value}"),
+    if false {
+        repl(context);
+    } else {
+        file(context, "test.el");
     }
 }

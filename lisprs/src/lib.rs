@@ -1,3 +1,5 @@
+#![allow(unused_macros)]
+
 use std::{
     any::type_name_of_val,
     cell::RefCell,
@@ -9,112 +11,114 @@ use std::{
     str::Chars,
 };
 
-#[derive(Debug)]
-pub enum ErrorKind {
-    Lex(LexErrorKind),
-    Parse(ParseErrorKind),
-    Compile(CompileErrorKind),
-    Runtime(RuntimeErrorKind),
-}
-
-#[derive(Debug)]
-pub struct Error {
-    kind: ErrorKind,
-    pub span: Span,
-}
-
-impl Error {
-    fn new(kind: ErrorKind, span: Span) -> Self {
-        Self { kind, span }
-    }
+pub enum Error {
+    Lex(LexError),
+    Parse(ParseError),
+    Compile(CompileError),
+    Runtime(RuntimeError),
 }
 
 impl From<LexError> for Error {
-    fn from(err: LexError) -> Self {
-        Error::new(ErrorKind::Lex(err.kind), err.span)
+    fn from(value: LexError) -> Self {
+        Error::Lex(value)
     }
 }
 impl From<ParseError> for Error {
-    fn from(err: ParseError) -> Self {
-        let kind = match err.kind {
-            ParseErrorKind::Lex(err) => ErrorKind::Lex(err),
-            _ => ErrorKind::Parse(err.kind),
-        };
-        Error::new(kind, err.span)
+    fn from(value: ParseError) -> Self {
+        match value {
+            ParseError::Lex(err) => Error::Lex(err),
+            _ => Error::Parse(value),
+        }
     }
 }
 impl From<CompileError> for Error {
-    fn from(err: CompileError) -> Self {
-        Self::new(ErrorKind::Compile(err.kind), err.span)
+    fn from(value: CompileError) -> Self {
+        Error::Compile(value)
     }
 }
 impl From<RuntimeError> for Error {
-    fn from(err: RuntimeError) -> Self {
-        Self::new(ErrorKind::Runtime(err.kind), err.span)
+    fn from(value: RuntimeError) -> Self {
+        Error::Runtime(value)
     }
 }
 
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            ErrorKind::Lex(err) => match err {
+impl Error {
+    pub fn show(self, source_code: &str) {
+        match self {
+            Error::Lex(err) => match err.kind {
                 LexErrorKind::UnclosedString => {
-                    write!(f, "unclosed string")
+                    eprintln!("ERROR: Lexer: unclosed string");
+                    err.span.show(source_code);
                 }
                 LexErrorKind::InvalidNumber => {
-                    write!(f, "invalid number")
+                    eprintln!("ERROR: Lexer: invalid number");
+                    err.span.show(source_code);
                 }
                 LexErrorKind::InvalidEscape(ch) => {
-                    write!(f, "invalid escape '\\{ch}'")
+                    eprintln!("ERROR: Lexer: invalid escape '\\{ch}'");
+                    err.span.show(source_code);
                 }
             },
-            ErrorKind::Parse(err) => match err {
-                ParseErrorKind::UnexpectedToken(token, wanted_kind) => {
-                    write!(f, "expected {} but got {}", wanted_kind, token)
+            Error::Parse(err) => match err {
+                ParseError::UnexpectedToken(token, wanted_kind) => {
+                    eprintln!(
+                        "ERROR: Parser: expected {} but got {}",
+                        wanted_kind, token.kind
+                    );
+                    token.span.show(source_code);
                 }
-                ParseErrorKind::ExtraParen(_token) => {
-                    write!(f, "extra parenthesis")
+                ParseError::ExtraParen(token) => {
+                    eprintln!("ERROR: Parser: extra parenthesis");
+                    token.span.show(source_code);
                 }
-                ParseErrorKind::Lex(_) => unreachable!(),
+                ParseError::Lex(_) => unreachable!(),
             },
-            ErrorKind::Compile(err) => match err {
-                CompileErrorKind::InvalidArgument(got, expected) => {
-                    write!(f, "invalid argument: expected {expected} but got {got}")
+            Error::Compile(err) => match err {
+                CompileError::InvalidArgument(got, expected, span) => {
+                    eprintln!(
+                        "ERROR: Compiler: invalid argument: expected {expected} but got {got}"
+                    );
+                    span.show(source_code);
                 }
-                CompileErrorKind::InvalidArgumentCount(got, expected) => {
-                    write!(
-                        f,
-                        "invalid argument count: expected {expected} but got {got}"
-                    )
+                CompileError::InvalidArgumentCount(got, expected, span) => {
+                    eprintln!(
+                        "ERROR: Compiler: invalid argument count: expected {expected} but got {got}"
+                    );
+                    span.show(source_code);
                 }
-                CompileErrorKind::UnexpectedCall(expr) => {
-                    write!(f, "cannot call a function on {expr}")
+                CompileError::UnexpectedCall(expr, span) => {
+                    eprintln!("ERROR: Compiler: cannot call a function on {expr}");
+                    span.show(source_code);
                 }
             },
-            ErrorKind::Runtime(err) => match err {
-                RuntimeErrorKind::UndefinedVariable => {
-                    write!(f, "undefined variable")
+            Error::Runtime(err) => match err {
+                RuntimeError::UndefinedVariable(span) => {
+                    eprintln!("ERROR: Runtime: undefined variable");
+                    span.show(source_code);
                 }
-                RuntimeErrorKind::NotAFunction(value) => {
-                    write!(f, "expected a function but got '{}'", value)
+                RuntimeError::NotAFunction(value, span) => {
+                    eprintln!("ERROR: Runtime: expected a function but got '{}'", value);
+                    span.show(source_code);
                 }
-                RuntimeErrorKind::TypeMismatch(given, expected) => {
-                    write!(f, "expected type '{}' but got '{}'", expected, given)
-                }
-                RuntimeErrorKind::WrongNumOfArgs(given, expected) => {
-                    write!(
-                        f,
-                        "expected {} number of arguments but got {}",
+                RuntimeError::TypeMismatch(given, expected, span) => {
+                    eprintln!(
+                        "ERROR: Runtime: expected type '{}' but got '{}'",
                         expected, given
-                    )
+                    );
+                    span.show(source_code);
                 }
-                RuntimeErrorKind::StackUnderflow => write!(f, "stack underflow"),
+                RuntimeError::WrongNumOfArgs(given, expected, span) => {
+                    eprintln!(
+                        "ERROR: Runtime: expected {} number of arguments but got {}",
+                        expected, given
+                    );
+                    span.show(source_code);
+                }
+                RuntimeError::StackUnderflow => eprintln!("ERROR: Runtime: stack underflow"),
             },
         }
     }
 }
-
-impl std::error::Error for Error {}
 
 // Lexer
 //
@@ -134,6 +138,21 @@ impl Span {
 
     // TODO: This is horrendous
     pub fn show(self, text: &str) {
+        let text_count = text.chars().count();
+        if self.start == self.end && self.start == text_count {
+            let (idx, line) = text.lines().enumerate().last().unwrap();
+            let line_count = line.chars().count();
+
+            eprint!("{} | ", idx + 1);
+            eprintln!("{line}");
+            eprint!("  | ");
+            for _ in 0..line_count {
+                eprint!(" ");
+            }
+            eprintln!("^");
+            return;
+        }
+
         if self.start == self.end {
             let target = self.start;
             let mut cur = 0;
@@ -170,10 +189,10 @@ impl Span {
                 eprint!("{} | ", idx + 1);
                 eprintln!("{line}");
                 eprint!("  | ");
-                for _ in 0..(start - line_start) {
+                for _ in 0..(start - line_start + 1) {
                     eprint!(" ");
                 }
-                for _ in (start - line_start)..(end - line_start) {
+                for _ in (start - line_start + 1)..(end - line_start + 1) {
                     eprint!("^");
                 }
                 eprint!("\n");
@@ -398,6 +417,7 @@ pub enum ExprKind {
     Symbol(String),
     String(String),
     Number(f64),
+    Nil,
     List(Vec<Expr>),
 }
 
@@ -418,8 +438,9 @@ impl Expr {
         let span = self.span;
         match &self.kind {
             ExprKind::Symbol(symbol) => Ok(symbol),
-            other => Err(CompileError::new(
-                CompileErrorKind::InvalidArgument(other.clone(), ExprKind::Symbol("symbol".into())),
+            other => Err(CompileError::InvalidArgument(
+                other.clone(),
+                ExprKind::Symbol("symbol".into()),
                 span,
             )),
         }
@@ -442,8 +463,9 @@ impl Expr {
         let span = self.span;
         match &self.kind {
             ExprKind::List(list) => Ok(list),
-            other => Err(CompileError::new(
-                CompileErrorKind::InvalidArgument(other.clone(), ExprKind::List(Vec::new())),
+            other => Err(CompileError::InvalidArgument(
+                other.clone(),
+                ExprKind::List(Vec::new()),
                 span,
             )),
         }
@@ -456,37 +478,22 @@ impl Display for ExprKind {
             ExprKind::Symbol(ident) => write!(f, "{ident}"),
             ExprKind::String(string) => write!(f, "{string}"),
             ExprKind::Number(num) => write!(f, "{num}"),
+            ExprKind::Nil => write!(f, "nil"),
             // TODO: do list properly
             ExprKind::List(_) => write!(f, "list"),
         }
     }
 }
 
-#[derive(Debug)]
-pub enum ParseErrorKind {
-    Lex(LexErrorKind),
-    UnexpectedToken(TokenKind, TokenKind),
-    ExtraParen(TokenKind),
-}
-
-#[derive(Debug)]
-pub struct ParseError {
-    kind: ParseErrorKind,
-    span: Span,
-}
-
-impl ParseError {
-    fn new(kind: ParseErrorKind, span: Span) -> Self {
-        Self { kind, span }
-    }
+pub enum ParseError {
+    Lex(LexError),
+    UnexpectedToken(Token, TokenKind),
+    ExtraParen(Token),
 }
 
 impl From<LexError> for ParseError {
     fn from(value: LexError) -> Self {
-        ParseError {
-            kind: ParseErrorKind::Lex(value.kind),
-            span: value.span,
-        }
+        Self::Lex(value)
     }
 }
 
@@ -510,7 +517,7 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         if let Some(token) = self.lexer.next() {
             match token {
                 Ok(token) => Ok(token),
-                Err(err) => Err(err.into()),
+                Err(err) => Err(ParseError::Lex(err)),
             }
         } else {
             let eof = self.eof.clone();
@@ -521,7 +528,7 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         if let Some(token) = self.lexer.peek() {
             match token {
                 Ok(token) => Ok(token),
-                Err(err) => Err(err.clone().into()),
+                Err(err) => Err(ParseError::Lex(err.clone())),
             }
         } else {
             let eof = self.eof.as_ref().unwrap();
@@ -534,10 +541,7 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         if token.kind == expected {
             Ok(token)
         } else {
-            Err(ParseError::new(
-                ParseErrorKind::UnexpectedToken(token.kind, expected),
-                token.span,
-            ))
+            Err(ParseError::UnexpectedToken(token, expected))
         }
     }
 
@@ -566,10 +570,7 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
         match token {
             Ok(token) => match token.kind {
                 TokenKind::OpenParen => Some(self.parse_list(token.span.start)),
-                TokenKind::CloseParen => Some(Err(ParseError::new(
-                    ParseErrorKind::ExtraParen(token.kind),
-                    token.span,
-                ))),
+                TokenKind::CloseParen => Some(Err(ParseError::ExtraParen(token))),
                 TokenKind::Number(number) => Some(Ok(Expr::number(number, token.span))),
                 TokenKind::String(string) => Some(Ok(Expr::string(string.clone(), token.span))),
                 TokenKind::Symbol(symbol) => Some(Ok(Expr::symbol(symbol.clone(), token.span))),
@@ -587,13 +588,12 @@ impl<I: Iterator<Item = Result<Token, LexError>>> Parser<I> {
 // Compiler
 //
 
-#[derive(Debug)]
-struct CompiledUnit {
+struct Module {
     functions: Vec<FunctionProto>,
     constants: Vec<Value>,
 }
 
-impl Display for CompiledUnit {
+impl Display for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "constants:")?;
         for (idx, c) in self.constants.iter().enumerate() {
@@ -602,7 +602,7 @@ impl Display for CompiledUnit {
 
         for func in &self.functions {
             writeln!(f, "func(arity: {}):", func.arity)?;
-            for c in &func.chunk.code {
+            for c in &func.body.code {
                 write!(f, "  ")?;
                 writeln!(f, "{c}")?;
             }
@@ -612,7 +612,7 @@ impl Display for CompiledUnit {
     }
 }
 
-impl CompiledUnit {
+impl Module {
     fn new() -> Self {
         Self {
             functions: Vec::new(),
@@ -620,7 +620,7 @@ impl CompiledUnit {
         }
     }
 
-    fn add_func(&mut self, arity: usize) -> FunctionId {
+    fn add_func(&mut self, arity: usize) -> FuncId {
         let func_id = self.functions.len();
         self.functions.push(FunctionProto::new(arity));
         func_id
@@ -634,24 +634,24 @@ impl CompiledUnit {
 }
 
 #[derive(Debug, Clone)]
-struct CaptureSource {
-    name: SymbolId,
-    slot: Slot,
+struct UpvalueDesc {
+    // name: SymbolId,
+    id: Slot,
     is_local: bool,
 }
 
 #[derive(Debug, Clone)]
 struct FunctionProto {
     arity: usize,
-    chunk: Chunk,
-    captures_src: Vec<CaptureSource>,
+    body: Chunk,
+    upvalues: Vec<UpvalueDesc>,
 }
 impl FunctionProto {
     fn new(arity: usize) -> Self {
         Self {
             arity,
-            chunk: Chunk::new(),
-            captures_src: Vec::new(),
+            body: Chunk::new(),
+            upvalues: Vec::new(),
         }
     }
 }
@@ -672,7 +672,7 @@ impl Chunk {
     }
 }
 
-type FunctionId = usize;
+type FuncId = usize;
 type Slot = usize;
 
 #[derive(Debug, Copy, Clone)]
@@ -683,12 +683,12 @@ struct Local {
 
 #[derive(Debug)]
 struct FuncCompiler {
-    func_id: FunctionId,
+    func_id: FuncId,
     locals: Vec<Local>,
     scope_depth: usize,
 }
 impl FuncCompiler {
-    fn new(id: FunctionId) -> Self {
+    fn new(id: FuncId) -> Self {
         Self {
             func_id: id,
             locals: Vec::new(),
@@ -698,35 +698,24 @@ impl FuncCompiler {
 }
 
 #[derive(Debug)]
-pub enum CompileErrorKind {
-    InvalidArgument(ExprKind, ExprKind),
+pub enum CompileError {
+    InvalidArgument(ExprKind, ExprKind, Span),
     // TODO: Right now we don't know if the argument is "at least" or "exact" or "range"
-    InvalidArgumentCount(usize, usize),
-    UnexpectedCall(ExprKind),
-}
-
-pub struct CompileError {
-    kind: CompileErrorKind,
-    span: Span,
-}
-
-impl CompileError {
-    fn new(kind: CompileErrorKind, span: Span) -> Self {
-        Self { kind, span }
-    }
+    InvalidArgumentCount(usize, usize, Span),
+    UnexpectedCall(ExprKind, Span),
 }
 
 struct Compiler<'a> {
-    unit: &'a mut CompiledUnit,
+    module: &'a mut Module,
     ctx: &'a mut Context,
 
     functions: Vec<FuncCompiler>,
 }
 
 impl<'a> Compiler<'a> {
-    fn new(unit: &'a mut CompiledUnit, ctx: &'a mut Context) -> Self {
+    fn new(module: &'a mut Module, ctx: &'a mut Context) -> Self {
         Self {
-            unit: unit,
+            module,
             ctx,
             functions: Vec::new(),
         }
@@ -739,10 +728,16 @@ impl<'a> Compiler<'a> {
         self.functions.last_mut().unwrap()
     }
 
-    fn emit(&mut self, instr: Instr, span: Span) {
+    fn emit(&mut self, instr: Instr) {
         let id = self.current().func_id;
-        assert!(id < self.unit.functions.len());
-        let body = &mut self.unit.functions[id].chunk;
+        assert!(id < self.module.functions.len());
+        let body = &mut self.module.functions[id].body;
+        body.code.push(instr);
+    }
+    fn emit_span(&mut self, instr: Instr, span: Span) {
+        let id = self.current().func_id;
+        assert!(id < self.module.functions.len());
+        let body = &mut self.module.functions[id].body;
         let instr_id = body.code.len();
         body.code.push(instr);
         body.spans.insert(instr_id, span);
@@ -782,61 +777,38 @@ impl<'a> Compiler<'a> {
             .rposition(|local| local.name == name)
     }
 
-    fn resolve_capture(&mut self, name: SymbolId) -> Option<Slot> {
-        if let Some(capture_id) = self.unit.functions[self.current().func_id]
-            .captures_src
-            .iter()
-            .position(|capture_source| capture_source.name == name)
-        {
-            return Some(capture_id);
-        }
-
-        fn resolve_capture_(
+    fn resolve_upvalue(&mut self, name: SymbolId) -> Option<Slot> {
+        fn resolve_upvalue_(
             compiler: &mut Compiler,
             name: SymbolId,
             fc_idx: usize,
-        ) -> Option<CaptureSource> {
-            {
-                let proto_id = compiler.functions[fc_idx].func_id;
-                let func_proto = &mut compiler.unit.functions[proto_id];
-
-                if let Some(capture_id) = func_proto
-                    .captures_src
-                    .iter()
-                    .position(|capture_source| capture_source.name == name)
-                {
-                    return Some(CaptureSource {
-                        name,
-                        slot: capture_id,
-                        is_local: false,
-                    });
-                }
-            }
-
+        ) -> Option<UpvalueDesc> {
             {
                 let locals = &compiler.functions[fc_idx].locals;
-                if let Some(slot) = locals.iter().rposition(|local| name == local.name) {
-                    return Some(CaptureSource {
-                        name,
-                        slot,
-                        is_local: true,
-                    });
+                for (id, local) in locals.iter().enumerate() {
+                    if name == local.name {
+                        return Some(UpvalueDesc {
+                            // name,
+                            id,
+                            is_local: true,
+                        });
+                    }
                 }
             }
             if fc_idx == 0 {
                 return None;
             }
 
-            if let Some(capture) = resolve_capture_(compiler, name, fc_idx - 1) {
+            if let Some(upvalue) = resolve_upvalue_(compiler, name, fc_idx - 1) {
                 let proto_id = compiler.functions[fc_idx].func_id;
-                let func_proto = &mut compiler.unit.functions[proto_id];
+                let func_proto = &mut compiler.module.functions[proto_id];
 
-                let capture_id = func_proto.captures_src.len();
-                func_proto.captures_src.push(capture);
+                let upvalue_id = func_proto.upvalues.len();
+                func_proto.upvalues.push(upvalue);
 
-                Some(CaptureSource {
-                    name,
-                    slot: capture_id,
+                Some(UpvalueDesc {
+                    // name,
+                    id: upvalue_id,
                     is_local: false,
                 })
             } else {
@@ -844,20 +816,15 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let capture_id = self.unit.functions[self.current().func_id]
-            .captures_src
-            .len();
-        resolve_capture_(self, name, self.functions.len() - 1)?;
+        let upvalue_id = self.module.functions[self.current().func_id].upvalues.len();
+        resolve_upvalue_(self, name, self.functions.len() - 1)?;
 
-        Some(capture_id)
+        Some(upvalue_id)
     }
 
     fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if args.len() < 3 {
-            return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 3),
-                span,
-            ));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 3, span));
         }
 
         let (name, args) = args.split_first().unwrap();
@@ -865,16 +832,8 @@ impl<'a> Compiler<'a> {
         self.compile_lambda(args, span)?;
 
         let symbol = name.into_symbol()?;
-        let symbol = self.ctx.symbols.intern(symbol);
-
-        if let Some(slot) = self.resolve_local(symbol) {
-            self.emit(Instr::SetLocal(slot), span);
-        } else if let Some(capture) = self.resolve_capture(symbol) {
-            self.emit(Instr::SetCapture(capture), span);
-        } else {
-            self.emit(Instr::SetGlobal(symbol), span);
-        }
-
+        let id = self.ctx.symbols.intern(symbol);
+        self.emit_span(Instr::Define(id), span);
         Ok(())
     }
 
@@ -882,10 +841,7 @@ impl<'a> Compiler<'a> {
         self.begin_scope();
 
         if args.len() < 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
-                span,
-            ));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
         }
 
         let (params_expr, body_exprs) = args.split_first().unwrap();
@@ -893,7 +849,7 @@ impl<'a> Compiler<'a> {
         let params = params_expr.into_list()?;
         let arity = params.len();
 
-        let func_id = self.unit.add_func(arity);
+        let func_id = self.module.add_func(arity);
         self.functions.push(FuncCompiler::new(func_id));
 
         for expr in params {
@@ -901,23 +857,20 @@ impl<'a> Compiler<'a> {
             self.add_local(name);
         }
         self.compile_progn(body_exprs, span)?;
-        self.emit(Instr::Return, span);
+        self.emit_span(Instr::Return, span);
 
         self.functions.pop();
 
-        self.emit(Instr::MakeClosure(func_id), span);
+        self.emit_span(Instr::MakeClosure(func_id), span);
 
         self.end_scope();
 
         Ok(())
     }
 
-    fn compile_setq(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+    fn compile_define(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if args.len() != 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
-                span,
-            ));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
         }
 
         let name = &args[0];
@@ -926,46 +879,33 @@ impl<'a> Compiler<'a> {
         self.compile_expr(value)?;
 
         let symbol = name.into_symbol()?;
-        let symbol = self.ctx.symbols.intern(symbol);
-
-        if let Some(slot) = self.resolve_local(symbol) {
-            self.emit(Instr::SetLocal(slot), span);
-        } else if let Some(capture) = self.resolve_capture(symbol) {
-            self.emit(Instr::SetCapture(capture), span);
-        } else {
-            self.emit(Instr::SetGlobal(symbol), span);
-        }
-
+        let id = self.ctx.symbols.intern(symbol);
+        self.emit_span(Instr::Define(id), span);
         Ok(())
     }
 
     fn compile_progn(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         let len = args.len();
         if len == 0 {
-            let id = self.unit.add_const(Value::Nil);
-            self.emit(Instr::PushConst(id), span);
+            let id = self.module.add_const(Value::Nil);
+            self.emit_span(Instr::PushConst(id), span);
         } else {
             for (idx, arg) in args.iter().enumerate() {
                 self.compile_expr(arg)?;
 
                 if idx < len - 1 {
-                    self.emit(Instr::Pop, arg.span);
+                    self.emit(Instr::Pop);
                 }
             }
         }
         Ok(())
     }
 
-    fn compile_let_rec(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+    fn compile_let(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         self.begin_scope();
         if args.len() < 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
-                span,
-            ));
+            return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
         }
-
-        let first_slot = self.current().locals.len();
 
         let (locals_exprs, body_exprs) = args.split_first().unwrap();
         let locals_exprs = locals_exprs.into_list()?;
@@ -974,20 +914,16 @@ impl<'a> Compiler<'a> {
             let span = local.span;
             let local = local.into_list()?;
             if local.len() != 2 {
-                return Err(CompileError::new(
-                    CompileErrorKind::InvalidArgumentCount(args.len(), 2),
-                    span,
-                ));
+                return Err(CompileError::InvalidArgumentCount(args.len(), 2, span));
             }
 
             let name = &local[0];
             let value = &local[1];
 
-            self.compile_expr(value)?;
             self.add_local(name.into_symbol()?);
+            self.compile_expr(value)?;
         }
         self.compile_progn(body_exprs, span)?;
-        self.emit(Instr::ExitScope(first_slot), span);
 
         self.end_scope();
         Ok(())
@@ -1002,58 +938,51 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_list(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
-        if let Some((head, args)) = args.split_first() {
-            match &head.kind {
-                ExprKind::Symbol(symbol) => match symbol.as_str() {
-                    "setq" => {
-                        self.compile_setq(args, span)?;
-                    }
-                    "lambda" => {
-                        self.compile_lambda(args, span)?;
-                    }
-                    "progn" => {
-                        self.compile_progn(args, span)?;
-                    }
-                    "defun" => {
-                        self.compile_defun(args, span)?;
-                    }
-                    "let*" => {
-                        self.compile_let_rec(args, span)?;
-                    }
-                    _ => {
-                        let arity = self.compile_args(args)?;
+        let (head, args) = args.split_first().unwrap();
 
-                        let symbol_id = self.ctx.symbols.intern(symbol);
-                        if let Some(local) = self.resolve_local(symbol_id) {
-                            self.emit(Instr::LoadLocal(local), head.span);
-                        } else if let Some(capture_id) = self.resolve_capture(symbol_id) {
-                            self.emit(Instr::LoadCapture(capture_id), head.span);
-                        } else {
-                            self.emit(Instr::LoadGlobal(symbol_id), head.span);
-                        }
-
-                        self.emit(Instr::Call(arity), span);
-                    }
-                },
-                ExprKind::List(list) => {
+        match &head.kind {
+            ExprKind::Symbol(symbol) => match symbol.as_str() {
+                "define" => {
+                    self.compile_define(args, span)?;
+                }
+                "lambda" => {
+                    self.compile_lambda(args, span)?;
+                }
+                "progn" => {
+                    self.compile_progn(args, span)?;
+                }
+                "defun" => {
+                    self.compile_defun(args, span)?;
+                }
+                "let" => {
+                    self.compile_let(args, span)?;
+                }
+                _ => {
                     let arity = self.compile_args(args)?;
 
-                    self.compile_list(list, head.span)?;
+                    let symbol_id = self.ctx.symbols.intern(symbol);
+                    if let Some(local) = self.resolve_local(symbol_id) {
+                        self.emit_span(Instr::LoadLocal(local), head.span);
+                    } else if let Some(upvalue_id) = self.resolve_upvalue(symbol_id) {
+                        self.emit_span(Instr::LoadUpvalue(upvalue_id), head.span);
+                    } else {
+                        self.emit_span(Instr::LoadGlobal(symbol_id), head.span);
+                    }
 
-                    self.emit(Instr::Call(arity), span);
+                    self.emit_span(Instr::Call(arity), span);
                 }
-                other => {
-                    return Err(CompileError::new(
-                        CompileErrorKind::UnexpectedCall(other.clone()),
-                        span,
-                    ));
-                }
+            },
+            ExprKind::List(list) => {
+                let arity = self.compile_args(args)?;
+
+                self.compile_list(list, head.span)?;
+
+                self.emit_span(Instr::Call(arity), span);
             }
-        } else {
-            let id = self.unit.add_const(Value::Nil);
-            self.emit(Instr::PushConst(id), span);
+            other => {
+                return Err(CompileError::UnexpectedCall(other.clone(), span));
+            }
         }
-
         Ok(())
     }
 
@@ -1062,28 +991,32 @@ impl<'a> Compiler<'a> {
             ExprKind::Symbol(symbol) => {
                 let id = self.ctx.symbols.intern(symbol);
                 if let Some(local) = self.resolve_local(id) {
-                    self.emit(Instr::LoadLocal(local), expr.span);
-                } else if let Some(capture_id) = self.resolve_capture(id) {
-                    self.emit(Instr::LoadCapture(capture_id), expr.span);
+                    self.emit_span(Instr::LoadLocal(local), expr.span);
+                } else if let Some(upvalue_id) = self.resolve_upvalue(id) {
+                    self.emit_span(Instr::LoadUpvalue(upvalue_id), expr.span);
                 } else {
-                    self.emit(Instr::LoadGlobal(id), expr.span);
+                    self.emit_span(Instr::LoadGlobal(id), expr.span);
                 }
             }
             ExprKind::Number(value) => {
-                let id = self.unit.add_const(Value::Number(*value));
-                self.emit(Instr::PushConst(id), expr.span);
+                let id = self.module.add_const(Value::Number(*value));
+                self.emit_span(Instr::PushConst(id), expr.span);
             }
             ExprKind::String(value) => {
-                let id = self.unit.add_const(Value::String(value.clone()));
-                self.emit(Instr::PushConst(id), expr.span);
+                let id = self.module.add_const(Value::String(value.clone()));
+                self.emit_span(Instr::PushConst(id), expr.span);
+            }
+            ExprKind::Nil => {
+                let id = self.module.add_const(Value::Nil);
+                self.emit_span(Instr::PushConst(id), expr.span);
             }
             ExprKind::List(list) => self.compile_list(list, expr.span)?,
         }
         Ok(())
     }
 
-    fn compile(module: &[Expr], ctx: &'a mut Context) -> Result<Rc<CompiledUnit>, CompileError> {
-        let mut result = CompiledUnit::new();
+    fn compile_module(module: &[Expr], ctx: &'a mut Context) -> Result<Module, CompileError> {
+        let mut result = Module::new();
         result.functions.push(FunctionProto::new(0));
 
         let mut compiler = Compiler::new(&mut result, ctx);
@@ -1092,22 +1025,22 @@ impl<'a> Compiler<'a> {
         let len = module.len();
         if len == 0 {
             let span = Span { start: 0, end: 0 };
-            let id = compiler.unit.add_const(Value::Nil);
-            compiler.emit(Instr::PushConst(id), span);
-            compiler.emit(Instr::Return, span);
+            let id = compiler.module.add_const(Value::Nil);
+            compiler.emit_span(Instr::PushConst(id), span);
+            compiler.emit_span(Instr::Return, span);
         } else {
             for (idx, arg) in module.iter().enumerate() {
                 compiler.compile_expr(arg)?;
 
                 if idx < len - 1 {
-                    compiler.emit(Instr::Pop, arg.span);
+                    compiler.emit(Instr::Pop);
                 }
             }
-            compiler.emit(Instr::Return, Span { start: 0, end: 0 });
+            compiler.emit_span(Instr::Return, Span { start: 0, end: 0 });
         }
         compiler.functions.pop();
 
-        Ok(Rc::new(result))
+        Ok(result)
     }
 }
 
@@ -1117,21 +1050,16 @@ impl<'a> Compiler<'a> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct SymbolId(usize);
 
-type StackIndex = usize;
-type CaptureIndex = usize;
-
 #[derive(Debug, Clone)]
 pub struct Closure {
-    unit: Rc<CompiledUnit>,
-    function: FunctionId,
-    captures: Vec<CaptureCell>,
+    proto_id: FuncId,
+    upvalues: Vec<UpvalueRef>,
 }
 impl Closure {
-    fn new(unit: Rc<CompiledUnit>, function: FunctionId) -> Self {
+    fn new(proto_id: FuncId) -> Self {
         Self {
-            unit,
-            function,
-            captures: Vec::new(),
+            proto_id,
+            upvalues: Vec::new(),
         }
     }
 }
@@ -1198,6 +1126,7 @@ impl From<&str> for Value {
 impl From<ExprKind> for Value {
     fn from(value: ExprKind) -> Self {
         match value {
+            ExprKind::Nil => Value::Nil,
             ExprKind::Number(number) => Value::Number(number),
             ExprKind::String(string) => Value::String(string),
             ExprKind::Symbol(symbol) => Value::Symbol(symbol),
@@ -1278,14 +1207,12 @@ enum Instr {
     PushConst(ConstId),
     Pop,
     LoadGlobal(SymbolId),
-    SetGlobal(SymbolId),
-    LoadCapture(CaptureIndex),
-    SetCapture(CaptureIndex),
+    LoadUpvalue(Slot),
     LoadLocal(Slot),
-    SetLocal(Slot),
+    // SetLocal(Slot),
     Call(usize),
-    MakeClosure(FunctionId),
-    ExitScope(Slot),
+    Define(SymbolId),
+    MakeClosure(FuncId),
     Return,
 }
 
@@ -1293,16 +1220,14 @@ impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Instr::Call(arity) => write!(f, "CALL(arity: {arity})")?,
+            Instr::Define(symbol_id) => write!(f, "DEFINE(symbol_id: {})", symbol_id.0)?,
             Instr::MakeClosure(id) => write!(f, "Closure(func_id: {id})")?,
             Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global.0)?,
-            Instr::SetGlobal(global) => write!(f, "SET_GLOBAL(global_id: {})", global.0)?,
-            Instr::LoadCapture(capture) => write!(f, "LOAD_CAPTURE(capture_id: {})", capture)?,
-            Instr::SetCapture(capture) => write!(f, "SET_CAPTURE(capture_id: {})", capture)?,
+            Instr::LoadUpvalue(upvalue) => write!(f, "LOAD_UPVALUE(upvalue_id: {})", upvalue)?,
             Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
-            Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
+            // Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
             Instr::Pop => write!(f, "POP")?,
             Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
-            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot}")?,
             Instr::Return => write!(f, "RETURN")?,
         }
         Ok(())
@@ -1316,31 +1241,20 @@ struct CallFrame {
 }
 
 #[derive(Debug, Clone)]
-enum Capture {
-    Open(StackIndex),
+enum Upvalue {
+    Open(Slot),
     Closed(Value),
 }
 
-type CaptureCell = Rc<RefCell<Capture>>;
+type UpvalueRef = Rc<RefCell<Upvalue>>;
 
 #[derive(Debug)]
-pub enum RuntimeErrorKind {
-    UndefinedVariable,
-    NotAFunction(String),
-    TypeMismatch(String, String),
-    WrongNumOfArgs(usize, usize),
+pub enum RuntimeError {
+    UndefinedVariable(Span),
+    NotAFunction(String, Span),
+    TypeMismatch(String, String, Span),
+    WrongNumOfArgs(usize, usize, Span),
     StackUnderflow,
-}
-
-pub struct RuntimeError {
-    kind: RuntimeErrorKind,
-    span: Span,
-}
-
-impl RuntimeError {
-    pub fn new(kind: RuntimeErrorKind, span: Span) -> Self {
-        Self { kind, span }
-    }
 }
 
 pub struct Vm<'ctx> {
@@ -1348,7 +1262,7 @@ pub struct Vm<'ctx> {
     ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
 
-    open_captures: Vec<CaptureCell>,
+    open_upvalues: Vec<UpvalueRef>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -1357,7 +1271,16 @@ impl<'ctx> Vm<'ctx> {
             stack: Vec::new(),
             ctx,
             frames: Vec::new(),
-            open_captures: Vec::new(),
+            open_upvalues: Vec::new(),
+        }
+    }
+
+    fn load_global(&mut self, name: SymbolId, span: Span) -> Result<(), RuntimeError> {
+        if let Some(global) = self.ctx.globals.get(&name) {
+            self.stack.push(global.clone());
+            Ok(())
+        } else {
+            return Err(RuntimeError::UndefinedVariable(span));
         }
     }
 
@@ -1368,38 +1291,11 @@ impl<'ctx> Vm<'ctx> {
         self.frames.last_mut().unwrap()
     }
 
-    fn exit_scope(&mut self, base: usize, span: Span) -> Result<(), RuntimeError> {
-        let result = self
-            .stack
-            .pop()
-            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
-
-        let mut i: usize = 0;
-        while i < self.open_captures.len() {
-            let open = Rc::clone(&self.open_captures[i]);
-            let mut capture = open.borrow_mut();
-            if let Capture::Open(stack_id) = *capture {
-                if stack_id >= base {
-                    *capture = Capture::Closed(self.stack[stack_id].clone());
-                    self.open_captures.swap_remove(i);
-                    continue;
-                }
-                i += 1;
-            } else {
-                unreachable!();
-            }
-        }
-
-        self.stack.truncate(base);
-        self.stack.push(result);
-        Ok(())
-    }
-
-    fn run(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, RuntimeError> {
-        assert!(unit.functions.len() > 0);
+    fn run(&mut self, module: &Module) -> Result<Value, RuntimeError> {
+        assert!(module.functions.len() > 0);
         // entry call frame
         self.frames.push(CallFrame {
-            closure: Closure::new(Rc::clone(&unit), 0), // entry function
+            closure: Closure::new(0), // entry function
             ip: 0,
             base: 0,
         });
@@ -1409,76 +1305,29 @@ impl<'ctx> Vm<'ctx> {
                 return Ok(self.stack.pop().unwrap());
             }
 
-            let (unit, instr, base, span) = {
+            let (instr, base, span) = {
                 let frame = self.current_mut();
-                let unit = Rc::clone(&frame.closure.unit);
 
-                let body = &unit.functions[frame.closure.function].chunk;
+                let body = &module.functions[frame.closure.proto_id].body;
                 let instr = body.code[frame.ip].clone();
                 let span = body.spans.get(&frame.ip).cloned();
 
                 frame.ip += 1;
 
-                (unit, instr, frame.base, span)
+                (instr, frame.base, span)
             };
 
             match instr {
-                Instr::PushConst(const_id) => self.stack.push(unit.constants[const_id].clone()),
+                Instr::PushConst(const_id) => self.stack.push(module.constants[const_id].clone()),
                 Instr::Pop => {
-                    self.stack.pop().ok_or(RuntimeError::new(
-                        RuntimeErrorKind::StackUnderflow,
-                        span.unwrap(),
-                    ))?;
+                    self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
                 }
-                Instr::LoadGlobal(symbol_id) => {
-                    if let Some(global) = self.ctx.globals.get(&symbol_id) {
-                        self.stack.push(global.clone());
-                    } else {
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::UndefinedVariable,
-                            span.unwrap(),
-                        ));
-                    }
-                }
-                Instr::SetGlobal(symbol) => {
-                    self.ctx.globals.insert(
-                        symbol,
-                        self.stack
-                            .last()
-                            .ok_or(RuntimeError::new(
-                                RuntimeErrorKind::StackUnderflow,
-                                span.unwrap(),
-                            ))?
-                            .clone(),
-                    );
-                }
-                Instr::LoadCapture(capture_id) => {
-                    let capture = self.current().closure.captures[capture_id].borrow().clone();
-                    match capture {
-                        Capture::Open(stack_id) => self.stack.push(self.stack[stack_id].clone()),
-                        Capture::Closed(captured) => self.stack.push(captured),
-                    }
-                }
-                Instr::SetCapture(capture_id) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .ok_or(RuntimeError::new(
-                            RuntimeErrorKind::StackUnderflow,
-                            span.unwrap(),
-                        ))?
-                        .clone();
-
-                    let capture = self.current().closure.captures[capture_id]
-                        .borrow_mut()
-                        .clone();
-
-                    match capture {
-                        Capture::Open(stack_id) => self.stack[stack_id] = value,
-                        Capture::Closed(_) => {
-                            *self.current().closure.captures[capture_id].borrow_mut() =
-                                Capture::Closed(value)
-                        }
+                Instr::LoadGlobal(symbol_id) => self.load_global(symbol_id, span.unwrap())?,
+                Instr::LoadUpvalue(slot) => {
+                    let upvalue = self.current().closure.upvalues[slot].borrow().clone();
+                    match upvalue {
+                        Upvalue::Open(slot) => self.stack.push(self.stack[slot].clone()),
+                        Upvalue::Closed(captured) => self.stack.push(captured),
                     }
                 }
                 Instr::LoadLocal(slot) => {
@@ -1487,24 +1336,18 @@ impl<'ctx> Vm<'ctx> {
                     if let Some(local) = self.stack.get(idx) {
                         self.stack.push(local.clone());
                     } else {
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::UndefinedVariable,
-                            span.unwrap(),
-                        ));
+                        return Err(RuntimeError::UndefinedVariable(span.unwrap()));
                     }
                 }
-                Instr::SetLocal(slot) => {
-                    let value = self
-                        .stack
-                        .last()
-                        .ok_or(RuntimeError::new(
-                            RuntimeErrorKind::StackUnderflow,
-                            span.unwrap(),
-                        ))?
-                        .clone();
+                // Instr::SetLocal(slot) => {
+                //     let idx = base + slot;
 
-                    self.stack[base + slot] = value;
-                }
+                //     if let Some(value) = self.stack.pop() {
+                //         self.stack[idx] = value;
+                //     } else {
+                //         return Err(RuntimeError::StackUnderflow);
+                //     }
+                // }
                 Instr::Call(argc) => {
                     let f = self.stack.pop().unwrap();
 
@@ -1515,10 +1358,7 @@ impl<'ctx> Vm<'ctx> {
                                 if let Some(arg) = self.stack.pop() {
                                     args.push(arg);
                                 } else {
-                                    return Err(RuntimeError::new(
-                                        RuntimeErrorKind::StackUnderflow,
-                                        span.unwrap(),
-                                    ));
+                                    return Err(RuntimeError::StackUnderflow);
                                 }
                             }
 
@@ -1526,23 +1366,21 @@ impl<'ctx> Vm<'ctx> {
                             self.stack.push(f(&args[..], span.unwrap())?);
                         }
                         Value::Closure(closure) => {
-                            let arity = closure.unit.functions[closure.function].arity;
+                            let arity = module.functions[closure.proto_id].arity;
 
                             if argc != arity {
-                                return Err(RuntimeError::new(
-                                    RuntimeErrorKind::WrongNumOfArgs(argc, arity),
+                                return Err(RuntimeError::WrongNumOfArgs(
+                                    argc,
+                                    arity,
                                     span.unwrap(),
                                 ));
                             }
 
-                            let base =
-                                self.stack
-                                    .len()
-                                    .checked_sub(arity)
-                                    .ok_or(RuntimeError::new(
-                                        RuntimeErrorKind::StackUnderflow,
-                                        span.unwrap(),
-                                    ))?;
+                            let base = self
+                                .stack
+                                .len()
+                                .checked_sub(arity)
+                                .ok_or(RuntimeError::StackUnderflow)?;
 
                             self.frames.push(CallFrame {
                                 closure,
@@ -1550,41 +1388,58 @@ impl<'ctx> Vm<'ctx> {
                                 base,
                             });
                         }
-                        _ => {
-                            return Err(RuntimeError::new(
-                                RuntimeErrorKind::NotAFunction(format!("{f}")),
-                                span.unwrap(),
-                            ));
-                        }
+                        _ => return Err(RuntimeError::NotAFunction(format!("{f}"), span.unwrap())),
                     }
                 }
+                Instr::Define(name) => {
+                    self.ctx
+                        .globals
+                        .insert(name, self.stack.pop().ok_or(RuntimeError::StackUnderflow)?);
+                    self.stack.push(Value::Nil);
+                }
                 Instr::MakeClosure(id) => {
-                    assert!(id < unit.functions.len());
+                    assert!(id < module.functions.len());
                     let mut closure = Closure {
-                        unit: Rc::clone(&unit),
-                        function: id,
-                        captures: Vec::new(),
+                        proto_id: id,
+                        upvalues: Vec::new(),
                     };
 
-                    for capture in &unit.functions[id].captures_src {
-                        if capture.is_local {
-                            let capture = Rc::new(RefCell::new(Capture::Open(base + capture.slot)));
-                            self.open_captures.push(Rc::clone(&capture));
-                            closure.captures.push(capture);
+                    for upvalue in &module.functions[id].upvalues {
+                        if upvalue.is_local {
+                            let upvalue = Rc::new(RefCell::new(Upvalue::Open(base + upvalue.id)));
+                            self.open_upvalues.push(Rc::clone(&upvalue));
+                            closure.upvalues.push(upvalue);
                         } else {
                             closure
-                                .captures
-                                .push(Rc::clone(&self.current().closure.captures[capture.slot]));
+                                .upvalues
+                                .push(Rc::clone(&self.current().closure.upvalues[upvalue.id]));
                         }
                     }
 
                     self.stack.push(Value::Closure(closure));
                 }
-                Instr::ExitScope(slot) => {
-                    self.exit_scope(base + slot, span.unwrap())?;
-                }
                 Instr::Return => {
-                    self.exit_scope(base, span.unwrap())?;
+                    let result = self.stack.pop().ok_or(RuntimeError::StackUnderflow)?;
+
+                    let mut i: usize = 0;
+                    while i < self.open_upvalues.len() {
+                        let open = Rc::clone(&self.open_upvalues[i]);
+                        let mut upvalue = open.borrow_mut();
+                        if let Upvalue::Open(slot) = *upvalue {
+                            if slot >= base {
+                                *upvalue = Upvalue::Closed(self.stack[slot].clone());
+                                self.open_upvalues.swap_remove(i);
+                                continue;
+                            }
+                            i += 1;
+                        } else {
+                            unreachable!();
+                        }
+                    }
+
+                    self.stack.truncate(base);
+                    self.stack.push(result);
+
                     self.frames.pop();
                 }
             }
@@ -1605,12 +1460,11 @@ pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
     Ok(result)
 }
 
-// right now context just has one module. need to handle multiple modules and each module is basically a namespace
 pub fn execute_module(source_code: &str, ctx: &mut Context) -> Result<Value, Error> {
     let mut vm = Vm::new(ctx);
     let ast = parse_module(source_code)?;
-    let module = Compiler::compile(&ast, vm.ctx)?;
-    // println!("{module}");
+    let module = Compiler::compile_module(&ast, vm.ctx)?;
+    println!("{module}");
 
-    Ok(vm.run(module)?)
+    Ok(vm.run(&module)?)
 }
