@@ -1,0 +1,10 @@
+(defun make-counter ()
+  (let* ((x 0))
+    (lambda ()
+      (setq x (+ x 1))
+      x)))
+
+(let* ((counter (make-counter)))
+  (counter)
+  (counter)
+  (counter))

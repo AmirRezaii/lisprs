@@ -33,7 +33,7 @@ impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Instr::Call(arity) => write!(f, "CALL(arity: {arity})")?,
-            Instr::MakeClosure(id) => write!(f, "Closure(func_id: {id})")?,
+            Instr::MakeClosure(id) => write!(f, "CLOSURE(func_id: {id})")?,
             Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global)?,
             Instr::SetGlobal(global) => write!(f, "SET_GLOBAL(global_id: {})", global)?,
             Instr::LoadCapture(capture) => write!(f, "LOAD_CAPTURE(capture_id: {})", capture)?,
@@ -95,12 +95,12 @@ struct Local {
 }
 
 #[derive(Debug)]
-struct FuncCompiler {
+struct FunctionCompiler {
     func_id: FunctionId,
     locals: Vec<Local>,
     scope_depth: usize,
 }
-impl FuncCompiler {
+impl FunctionCompiler {
     fn new(id: FunctionId) -> Self {
         Self {
             func_id: id,
@@ -114,7 +114,7 @@ pub struct Compiler<'a> {
     unit: &'a mut CompiledUnit,
     ctx: &'a mut Context,
 
-    functions: Vec<FuncCompiler>,
+    functions: Vec<FunctionCompiler>,
 }
 
 impl<'a> Compiler<'a> {
@@ -126,10 +126,10 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn current(&self) -> &FuncCompiler {
+    fn current(&self) -> &FunctionCompiler {
         self.functions.last().unwrap()
     }
-    fn current_mut(&mut self) -> &mut FuncCompiler {
+    fn current_mut(&mut self) -> &mut FunctionCompiler {
         self.functions.last_mut().unwrap()
     }
 
@@ -288,7 +288,7 @@ impl<'a> Compiler<'a> {
         let arity = params.len();
 
         let func_id = self.unit.add_func(arity);
-        self.functions.push(FuncCompiler::new(func_id));
+        self.functions.push(FunctionCompiler::new(func_id));
 
         for expr in params {
             let name = expr.into_symbol()?;
@@ -387,6 +387,23 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn compile_return(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                CompileErrorKind::InvalidArgumentCount(args.len(), 1),
+                span,
+            ));
+        }
+
+        let expr = &args[0];
+
+        self.compile_expr(expr)?;
+
+        self.emit(Instr::Return, span);
+
+        Ok(())
+    }
+
     fn compile_args(&mut self, args: &[Expr]) -> Result<usize, CompileError> {
         let arity = args.len();
         for arg in args {
@@ -413,6 +430,9 @@ impl<'a> Compiler<'a> {
                     }
                     "let*" => {
                         self.compile_let_rec(args, span)?;
+                    }
+                    "return" => {
+                        self.compile_return(args, span)?;
                     }
                     _ => {
                         let arity = self.compile_args(args)?;
@@ -484,7 +504,7 @@ impl<'a> Compiler<'a> {
         result.functions.push(FunctionProto::new(0));
 
         let mut compiler = Compiler::new(&mut result, ctx);
-        compiler.functions.push(FuncCompiler::new(0));
+        compiler.functions.push(FunctionCompiler::new(0));
 
         let len = module.len();
         if len == 0 {

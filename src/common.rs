@@ -1,6 +1,6 @@
 use std::{any::type_name_of_val, collections::HashMap, fmt::Display};
 
-use crate::{compiler::FunctionProto, diagnostics::*, runtime::Closure};
+use crate::{compiler::FunctionProto, diagnostics::*, runtime::Closure, stdlib};
 
 pub type ConstId = usize;
 pub type FunctionId = usize;
@@ -50,6 +50,18 @@ impl Context {
             globals: Globals::new(),
             symbols: SymbolTable::new(),
         }
+    }
+    pub fn stdlib() -> Self {
+        let mut ctx = Self::new();
+
+        // Builtins used by test programs.
+        ctx.define_native("+", stdlib::add);
+        ctx.define_native("*", stdlib::multiply);
+        ctx.define_native("-", stdlib::subtract);
+        ctx.define_native("=", stdlib::equals);
+        ctx.define_native("print", stdlib::print);
+
+        ctx
     }
 
     pub fn define_native(
@@ -128,8 +140,8 @@ impl Display for Value {
             Value::String(string) => write!(f, "{string}"),
             Value::Number(num) => write!(f, "{num}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
-            Value::Nil => write!(f, "nil"),
             Value::Closure(_closure) => write!(f, "closure"),
+            Value::Nil => write!(f, "nil"),
         }
     }
 }

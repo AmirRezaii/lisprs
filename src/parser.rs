@@ -71,8 +71,16 @@ impl Display for ExprKind {
             ExprKind::Symbol(ident) => write!(f, "{ident}"),
             ExprKind::String(string) => write!(f, "{string}"),
             ExprKind::Number(num) => write!(f, "{num}"),
-            // TODO: do list properly
-            ExprKind::List(_) => write!(f, "list"),
+            ExprKind::List(list) => {
+                write!(f, "(")?;
+                for (i, expr) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", expr.kind)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

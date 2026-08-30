@@ -3,62 +3,7 @@ use std::{
     io::{Write, stdin, stdout},
 };
 
-use lisprs::{
-    common::{Context, Value},
-    diagnostics::*,
-    execute_module,
-};
-
-fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    let mut sum: f64 = 0.;
-
-    for arg in args {
-        match arg {
-            Value::Number(n) => sum += n,
-            other => {
-                return Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(format!("{other}"), "number".to_string()),
-                    span,
-                ));
-            }
-        }
-    }
-
-    Ok(Value::Number(sum))
-}
-
-fn mult(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    let mut res: f64 = 1.;
-
-    for arg in args {
-        match arg {
-            Value::Number(n) => res *= n,
-            other => {
-                return Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(format!("{other}"), "number".to_string()),
-                    span,
-                ));
-            }
-        }
-    }
-
-    Ok(Value::Number(res))
-}
-
-fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    if args.len() > 0 {
-        for arg in args {
-            print!("{} ", arg);
-        }
-        print!("\n");
-        Ok(args.last().unwrap().clone())
-    } else {
-        Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(0, 1),
-            span,
-        ))
-    }
-}
+use lisprs::{common::Context, execute_module};
 
 fn repl(mut context: Context) {
     let mut src = String::new();
@@ -95,14 +40,11 @@ fn file(mut context: Context, path: &str) {
 }
 
 fn main() {
-    let mut context = Context::new();
-    context.define_native("+", add);
-    context.define_native("*", mult);
-    context.define_native("print", print);
+    let context = Context::stdlib();
 
-    if true {
+    if false {
         repl(context);
     } else {
-        file(context, "test.el");
+        file(context, "tests/programs/returns.el");
     }
 }

@@ -13,6 +13,7 @@ pub mod diagnostics;
 mod lexer;
 mod parser;
 mod runtime;
+pub mod stdlib;
 
 pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
     let mut result: Vec<Expr> = Vec::new();
@@ -33,6 +34,5 @@ pub fn execute_module(source_code: &str, ctx: &mut Context) -> Result<Value, Err
     let ast = parse_module(source_code)?;
     let module = Compiler::compile(&ast, vm.ctx)?;
     // println!("{module}");
-
     Ok(vm.run(module)?)
 }
