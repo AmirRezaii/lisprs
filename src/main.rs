@@ -3,7 +3,11 @@ use std::{
     io::{Write, stdin, stdout},
 };
 
-use lisprs::{Context, RuntimeError, RuntimeErrorKind, Span, Value, execute_module};
+use lisprs::{
+    common::{Context, Value},
+    diagnostics::*,
+    execute_module,
+};
 
 fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut sum: f64 = 0.;
@@ -96,7 +100,7 @@ fn main() {
     context.define_native("*", mult);
     context.define_native("print", print);
 
-    if false {
+    if true {
         repl(context);
     } else {
         file(context, "test.el");
