@@ -311,10 +311,25 @@ impl<'ctx> Vm<'ctx> {
 
                     for capture in &unit.functions[id].captures_src {
                         if capture.is_local {
-                            let capture = Object::Capture(Capture::Open(base + capture.slot));
-                            let capture_ref = self.ctx.heap.allocate(capture);
-                            self.open_captures.push(capture_ref);
-                            result.captures.push(capture_ref);
+                            if let Some(capture_ref) = self.open_captures.iter().find(|&c| {
+                                let stack_index = {
+                                    match self.ctx.heap.get(*c).unwrap() {
+                                        Object::Capture(c) => match c {
+                                            Capture::Open(stack_index) => *stack_index,
+                                            _ => unreachable!(),
+                                        },
+                                        _ => unreachable!(),
+                                    }
+                                };
+                                stack_index == capture.slot + base
+                            }) {
+                                result.captures.push(*capture_ref);
+                            } else {
+                                let capture = Object::Capture(Capture::Open(base + capture.slot));
+                                let capture_ref = self.ctx.heap.allocate(capture);
+                                self.open_captures.push(capture_ref);
+                                result.captures.push(capture_ref);
+                            }
                         } else {
                             result.captures.push(closure.captures[capture.slot]);
                         }

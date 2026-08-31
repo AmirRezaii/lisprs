@@ -1,0 +1,17 @@
+(defun make-counters ()
+  (let* ((x 0))
+    (list
+      (lambda ()
+        (setq x (+ x 1))
+        x)
+      (lambda ()
+        x))))
+
+(let* ((counters (make-counters)))
+  (let* ((increment (car counters))
+        (read (car (cdr counters))))
+    (read)
+    (increment)
+    (increment)
+    (increment)
+    (read)))
