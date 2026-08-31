@@ -117,3 +117,76 @@ pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
         Ok(Value::Obj(obj))
     }
 }
+
+pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() < 1 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            span,
+        ))
+    } else {
+        let mut cur = Value::Nil;
+
+        for val in args.iter().rev() {
+            let pair = Pair {
+                car: val.clone(),
+                cdr: cur,
+            };
+            let pair_ref = ctx.heap.allocate(Object::Pair(pair));
+            cur = Value::Obj(pair_ref);
+        }
+
+        Ok(cur)
+    }
+}
+
+pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            span,
+        ))
+    } else {
+        match &args[0] {
+            Value::Obj(obj_ref) => {
+                let obj = ctx.heap.get(*obj_ref).unwrap();
+                match obj {
+                    Object::Pair(Pair { car, cdr: _ }) => Ok(car.clone()),
+                    other => Err(RuntimeError::new(
+                        RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
+                        span,
+                    )),
+                }
+            }
+            other => Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
+                span,
+            )),
+        }
+    }
+}
+pub fn cdr(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            span,
+        ))
+    } else {
+        match &args[0] {
+            Value::Obj(obj_ref) => {
+                let obj = ctx.heap.get(*obj_ref).unwrap();
+                match obj {
+                    Object::Pair(Pair { car: _, cdr }) => Ok(cdr.clone()),
+                    other => Err(RuntimeError::new(
+                        RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
+                        span,
+                    )),
+                }
+            }
+            other => Err(RuntimeError::new(
+                RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
+                span,
+            )),
+        }
+    }
+}

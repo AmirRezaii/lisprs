@@ -68,6 +68,9 @@ impl Context {
         ctx.define_native("=", stdlib::equals);
         ctx.define_native("print", stdlib::print);
         ctx.define_native("cons", stdlib::cons);
+        ctx.define_native("list", stdlib::list);
+        ctx.define_native("car", stdlib::car);
+        ctx.define_native("cdr", stdlib::cdr);
 
         ctx
     }
