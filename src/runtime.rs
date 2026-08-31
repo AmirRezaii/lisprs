@@ -1,27 +1,9 @@
-use std::{fmt::Display, rc::Rc};
+use std::rc::Rc;
 
 use crate::{common::*, compiler::*, diagnostics::*};
 
-type StackIndex = usize;
-
-#[derive(Debug, Clone)]
-pub struct ClosureObj {
-    unit: Rc<CompiledUnit>,
-    function: FunctionId,
-    captures: Vec<ObjRef>,
-}
-impl ClosureObj {
-    fn new(unit: Rc<CompiledUnit>, function: FunctionId) -> Self {
-        Self {
-            unit,
-            function,
-            captures: Vec::new(),
-        }
-    }
-}
-
 pub struct Heap {
-    objects: Vec<Option<Obj>>,
+    objects: Vec<Option<Object>>,
 }
 
 impl Heap {
@@ -31,66 +13,41 @@ impl Heap {
         }
     }
 
-    pub fn allocate(&mut self, value: Obj) -> ObjRef {
+    pub fn allocate(&mut self, value: Object) -> ObjectRef {
         for (i, obj) in self.objects.iter_mut().enumerate() {
             if obj.is_none() {
                 obj.replace(value);
-                return ObjRef(i);
+                return ObjectRef(i);
             }
         }
 
         let index = self.objects.len();
         self.objects.push(Some(value));
-        ObjRef(index)
+        ObjectRef(index)
     }
 
-    pub fn get(&self, obj_ref: ObjRef) -> Option<&Obj> {
+    pub fn get(&self, obj_ref: ObjectRef) -> Option<&Object> {
         self.objects[obj_ref.0].as_ref()
     }
-    pub fn take(&mut self, obj_ref: ObjRef) -> Option<Obj> {
+    pub fn take(&mut self, obj_ref: ObjectRef) -> Option<Object> {
         self.objects[obj_ref.0].take()
     }
-    pub fn replace(&mut self, obj_ref: ObjRef, value: Obj) -> Option<Obj> {
+    pub fn replace(&mut self, obj_ref: ObjectRef, value: Object) -> Option<Object> {
         self.objects[obj_ref.0].replace(value)
     }
 }
 
-pub enum Obj {
-    String(String),
-    Closure(ClosureObj),
-    Capture(Capture),
-    // Pair
-}
-impl Display for Obj {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::String(string) => write!(f, "{string}"),
-            Self::Closure(closure) => write!(f, "(closure {})", closure.function),
-            Self::Capture(_capture) => write!(f, "capture"),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ObjRef(pub usize);
-
 struct CallFrame {
-    closure: ObjRef,
+    closure: ObjectRef,
     ip: usize,
     base: usize,
-}
-
-#[derive(Debug, Clone)]
-pub enum Capture {
-    Open(StackIndex),
-    Closed(Value),
 }
 
 pub struct Vm<'ctx> {
     stack: Vec<Value>,
     pub ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
-    open_captures: Vec<ObjRef>,
+    open_captures: Vec<ObjectRef>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -119,40 +76,31 @@ impl<'ctx> Vm<'ctx> {
         let mut i: usize = 0;
         while i < self.open_captures.len() {
             let capture_ref = self.open_captures[i];
-            let capture = self.ctx.heap.get(capture_ref).unwrap();
-            if let Obj::Capture(capture) = capture {
-                if let Capture::Open(stack_id) = *capture {
-                    if stack_id >= base {
-                        self.ctx.heap.replace(
-                            capture_ref,
-                            Obj::Capture(Capture::Closed(self.stack[stack_id].clone())),
-                        );
-                        self.open_captures.swap_remove(i);
-                        continue;
-                    }
-                    i += 1;
-                } else {
-                    unreachable!();
+            let stack_id = {
+                let capture = self.ctx.heap.get(capture_ref).unwrap();
+                match capture {
+                    Object::Capture(capture) => match capture {
+                        Capture::Open(stack_id) => *stack_id,
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
                 }
-            } else {
-                unreachable!();
+            };
+
+            if stack_id >= base {
+                self.ctx.heap.replace(
+                    capture_ref,
+                    Object::Capture(Capture::Closed(self.stack[stack_id].clone())),
+                );
+                self.open_captures.swap_remove(i);
+                continue;
             }
+            i += 1;
         }
 
         self.stack.truncate(base);
         self.stack.push(result);
         Ok(())
-    }
-
-    fn push_const(&mut self, constant: Constant) {
-        match constant {
-            Constant::String(string) => {
-                let obj_ref = self.ctx.heap.allocate(Obj::String(string));
-                self.stack.push(Value::Obj(obj_ref));
-            }
-            Constant::Number(number) => self.stack.push(Value::Number(number)),
-            Constant::Nil => self.stack.push(Value::Nil),
-        }
     }
 
     pub fn run(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, RuntimeError> {
@@ -161,7 +109,7 @@ impl<'ctx> Vm<'ctx> {
         let closure_ref = self
             .ctx
             .heap
-            .allocate(Obj::Closure(ClosureObj::new(Rc::clone(&unit), 0)));
+            .allocate(Object::Closure(Closure::new(Rc::clone(&unit), 0)));
         self.frames.push(CallFrame {
             closure: closure_ref, // entry function
             ip: 0,
@@ -177,7 +125,7 @@ impl<'ctx> Vm<'ctx> {
                 let closure = {
                     let closure_obj = self.ctx.heap.get(self.current().closure).unwrap();
                     match closure_obj {
-                        Obj::Closure(closure) => closure.clone(),
+                        Object::Closure(closure) => closure.clone(),
                         _ => unreachable!(),
                     }
                 };
@@ -194,7 +142,12 @@ impl<'ctx> Vm<'ctx> {
             };
 
             match instr {
-                Instr::PushConst(const_id) => self.push_const(unit.constants[const_id].clone()),
+                Instr::PushNil => self.stack.push(Value::Nil),
+                Instr::PushConst(const_id) => {
+                    let constant = unit.constants[const_id].clone();
+                    let value = self.ctx.constant_to_value(constant);
+                    self.stack.push(value);
+                }
                 Instr::Pop => {
                     self.stack.pop().ok_or(RuntimeError::new(
                         RuntimeErrorKind::StackUnderflow,
@@ -226,7 +179,7 @@ impl<'ctx> Vm<'ctx> {
                 Instr::LoadCapture(capture_id) => {
                     let capture_ref = closure.captures[capture_id];
                     let capture = self.ctx.heap.get(capture_ref).unwrap();
-                    if let Obj::Capture(capture) = capture {
+                    if let Object::Capture(capture) = capture {
                         match capture {
                             Capture::Open(stack_id) => {
                                 self.stack.push(self.stack[*stack_id].clone())
@@ -248,13 +201,13 @@ impl<'ctx> Vm<'ctx> {
                         .clone();
 
                     let capture_ref = closure.captures[capture_id];
-                    if let Obj::Capture(capture) = self.ctx.heap.get(capture_ref).unwrap() {
+                    if let Object::Capture(capture) = self.ctx.heap.get(capture_ref).unwrap() {
                         match capture {
                             Capture::Open(stack_id) => self.stack[*stack_id] = value,
                             Capture::Closed(_) => {
                                 self.ctx
                                     .heap
-                                    .replace(capture_ref, Obj::Capture(Capture::Closed(value)));
+                                    .replace(capture_ref, Object::Capture(Capture::Closed(value)));
                             }
                         }
                     } else {
@@ -309,7 +262,7 @@ impl<'ctx> Vm<'ctx> {
                         Value::Obj(obj_ref) => {
                             let closure = self.ctx.heap.get(obj_ref).unwrap();
                             match closure {
-                                Obj::Closure(closure) => {
+                                Object::Closure(closure) => {
                                     let arity = closure.unit.functions[closure.function].arity;
 
                                     if argc != arity {
@@ -350,7 +303,7 @@ impl<'ctx> Vm<'ctx> {
                 }
                 Instr::MakeClosure(id) => {
                     assert!(id < unit.functions.len());
-                    let mut result = ClosureObj {
+                    let mut result = Closure {
                         unit: Rc::clone(&unit),
                         function: id,
                         captures: Vec::new(),
@@ -358,7 +311,7 @@ impl<'ctx> Vm<'ctx> {
 
                     for capture in &unit.functions[id].captures_src {
                         if capture.is_local {
-                            let capture = Obj::Capture(Capture::Open(base + capture.slot));
+                            let capture = Object::Capture(Capture::Open(base + capture.slot));
                             let capture_ref = self.ctx.heap.allocate(capture);
                             self.open_captures.push(capture_ref);
                             result.captures.push(capture_ref);
@@ -367,7 +320,7 @@ impl<'ctx> Vm<'ctx> {
                         }
                     }
 
-                    let obj_ref = self.ctx.heap.allocate(Obj::Closure(result));
+                    let obj_ref = self.ctx.heap.allocate(Object::Closure(result));
                     self.stack.push(Value::Obj(obj_ref));
                 }
                 Instr::ExitScope(slot) => {

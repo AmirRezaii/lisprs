@@ -79,6 +79,9 @@ impl Display for Error {
                 CompileErrorKind::UnexpectedCall(expr) => {
                     write!(f, "cannot call a function on {expr}")
                 }
+                CompileErrorKind::UnquotedDottedList => {
+                    write!(f, "dotted list is only valid as quoted data")
+                }
             },
             ErrorKind::Runtime(err) => match err {
                 RuntimeErrorKind::UndefinedVariable => {
@@ -158,6 +161,7 @@ pub enum CompileErrorKind {
     // TODO: Right now we don't know if the argument is "at least" or "exact" or "range"
     InvalidArgumentCount(usize, usize),
     UnexpectedCall(String),
+    UnquotedDottedList,
 }
 
 pub struct CompileError {

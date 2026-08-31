@@ -8,6 +8,10 @@ pub enum ExprKind {
     String(String),
     Number(f64),
     List(Vec<Expr>),
+    DottedList {
+        elements: Vec<Expr>,
+        tail: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +85,14 @@ impl Display for ExprKind {
                 }
                 write!(f, ")")
             }
+            ExprKind::DottedList { elements, tail } => {
+                assert!(elements.len() > 0);
+                write!(f, "(")?;
+                for element in elements {
+                    write!(f, "{} ", element.kind)?
+                }
+                write!(f, ". {})", tail.kind)
+            }
         }
     }
 }
@@ -143,12 +155,67 @@ where
         ))
     }
 
+    fn parse_quote(&mut self, start: usize) -> Result<Expr, ParseError> {
+        if let Some(expr) = self.parse_expr()? {
+            let end = expr.span.end;
+
+            let mut exprs: Vec<Expr> = Vec::new();
+
+            exprs.push(Expr {
+                kind: ExprKind::Symbol("quote".to_string()),
+                span: Span { start, end },
+            });
+            exprs.push(expr);
+
+            Ok(Expr {
+                kind: ExprKind::List(exprs),
+                span: Span { start, end },
+            })
+        } else {
+            Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    got: "end of file".to_string(),
+                    expected: "expression".to_string(),
+                },
+                Span {
+                    start,
+                    end: self.source_len,
+                },
+            ))
+        }
+    }
     // Span of the list starts from the parenthesis in here
     fn parse_list(&mut self, start: usize) -> Result<Expr, ParseError> {
         let mut exprs: Vec<Expr> = Vec::new();
         while let Some(token) = self.peek_token()?
             && token.kind != TokenKind::CloseParen
         {
+            if token.kind == TokenKind::Dot {
+                self.consume(TokenKind::Dot)?;
+
+                if let Some(tail) = self.parse_expr()? {
+                    let end = self.consume(TokenKind::CloseParen)?.span.end;
+                    return Ok(Expr {
+                        kind: ExprKind::DottedList {
+                            elements: exprs,
+                            tail: Box::new(tail),
+                        },
+                        span: Span { start, end },
+                    });
+                } else {
+                    return Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            got: "end of file".to_string(),
+                            expected: "expression".to_string(),
+                        },
+                        Span {
+                            start,
+                            end: self.source_len,
+                        },
+                    ));
+                }
+            }
+
             exprs.push(self.parse_expr()?.unwrap());
         }
         let close_paren = self.consume(TokenKind::CloseParen)?;
@@ -165,13 +232,21 @@ where
         match token {
             Some(token) => match token.kind {
                 TokenKind::OpenParen => Ok(Some(self.parse_list(token.span.start)?)),
+                TokenKind::Number(number) => Ok(Some(Expr::number(number, token.span))),
+                TokenKind::String(string) => Ok(Some(Expr::string(string.clone(), token.span))),
+                TokenKind::Symbol(symbol) => Ok(Some(Expr::symbol(symbol.clone(), token.span))),
+                TokenKind::Quote => Ok(Some(self.parse_quote(token.span.start)?)),
                 TokenKind::CloseParen => Err(ParseError::new(
                     ParseErrorKind::ExtraParen(token.kind.to_string()),
                     token.span,
                 )),
-                TokenKind::Number(number) => Ok(Some(Expr::number(number, token.span))),
-                TokenKind::String(string) => Ok(Some(Expr::string(string.clone(), token.span))),
-                TokenKind::Symbol(symbol) => Ok(Some(Expr::symbol(symbol.clone(), token.span))),
+                TokenKind::Dot => Err(ParseError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        got: token.kind.to_string(),
+                        expected: "expression".to_string(),
+                    },
+                    token.span,
+                )),
             },
             None => Ok(None),
         }

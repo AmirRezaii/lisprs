@@ -1,14 +1,15 @@
-use std::{any::type_name_of_val, collections::HashMap, fmt::Display};
+use std::{any::type_name_of_val, collections::HashMap, fmt::Display, rc::Rc};
 
 use crate::{
     compiler::{Constant, FunctionProto},
     diagnostics::*,
-    runtime::{Heap, ObjRef},
+    runtime::Heap,
     stdlib,
 };
 
 pub type ConstId = usize;
 pub type FunctionId = usize;
+pub type StackIndex = usize;
 
 pub type SymbolId = usize;
 pub type CaptureIndex = usize;
@@ -66,17 +67,68 @@ impl Context {
         ctx.define_native("-", stdlib::subtract);
         ctx.define_native("=", stdlib::equals);
         ctx.define_native("print", stdlib::print);
+        ctx.define_native("cons", stdlib::cons);
 
         ctx
     }
 
-    pub fn define_native(
-        &mut self,
-        symbol: &str,
-        func: fn(&mut Context, &[Value], span: Span) -> Result<Value, RuntimeError>,
-    ) {
+    pub fn define_native(&mut self, symbol: &str, func: NativeFn) {
         let id = self.symbols.intern(symbol);
         self.globals.insert(id, Value::NativeFunction(func));
+    }
+
+    pub fn format_value(&self, value: &Value) -> String {
+        let result: String;
+
+        match value {
+            Value::Obj(obj_ref) => {
+                let obj = self
+                    .heap
+                    .get(*obj_ref)
+                    .expect("object reference to heap empty");
+                result = String::from(format!("{}", self.format_object(obj)));
+            }
+            other => result = String::from(format!("{other}")),
+        }
+
+        result
+    }
+    pub fn format_object(&self, object: &Object) -> String {
+        let result: String;
+
+        match object {
+            Object::Pair(pair) => {
+                result = String::from(format!(
+                    "({} . {})",
+                    self.format_value(&pair.car),
+                    self.format_value(&pair.cdr)
+                ));
+            }
+            other => result = String::from(format!("{other}")),
+        }
+
+        result
+    }
+
+    pub fn constant_to_value(&mut self, constant: Constant) -> Value {
+        match constant {
+            Constant::Symbol(symbol) => {
+                let symbol = self.symbols.resolve(symbol);
+                Value::Symbol(symbol.to_string())
+            }
+            Constant::String(string) => {
+                let obj_ref = self.heap.allocate(Object::String(string));
+                Value::Obj(obj_ref)
+            }
+            Constant::Number(number) => Value::Number(number),
+            Constant::Pair(pair) => {
+                let car = self.constant_to_value(*pair.car);
+                let cdr = self.constant_to_value(*pair.cdr);
+                let obj_ref = self.heap.allocate(Object::Pair(Pair { car, cdr }));
+                Value::Obj(obj_ref)
+            }
+            Constant::Nil => Value::Nil,
+        }
     }
 }
 
@@ -126,12 +178,14 @@ impl Display for CompiledUnit {
     }
 }
 
+pub type NativeFn = fn(&mut Context, &[Value], Span) -> Result<Value, RuntimeError>;
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Symbol(String),
     Number(f64),
-    NativeFunction(fn(&mut Context, &[Value], Span) -> Result<Value, RuntimeError>),
-    Obj(ObjRef),
+    NativeFunction(NativeFn),
+    Obj(ObjectRef),
     Nil,
 }
 
@@ -175,8 +229,58 @@ impl Display for Value {
             Value::Symbol(ident) => write!(f, "{ident}"),
             Value::Number(num) => write!(f, "{num}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
-            Value::Obj(obj_ref) => write!(f, "{}", obj_ref.0),
+            Value::Obj(obj_ref) => write!(f, "<object #{}>", obj_ref.0),
             Value::Nil => write!(f, "nil"),
         }
     }
 }
+
+// Object Types
+
+#[derive(Debug, Clone)]
+pub struct Closure {
+    pub unit: Rc<CompiledUnit>,
+    pub function: FunctionId,
+    pub captures: Vec<ObjectRef>,
+}
+impl Closure {
+    pub fn new(unit: Rc<CompiledUnit>, function: FunctionId) -> Self {
+        Self {
+            unit,
+            function,
+            captures: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Capture {
+    Open(StackIndex),
+    Closed(Value),
+}
+
+#[derive(Debug, Clone)]
+pub struct Pair {
+    pub car: Value,
+    pub cdr: Value,
+}
+
+pub enum Object {
+    String(String),
+    Pair(Pair),
+    Closure(Closure),
+    Capture(Capture),
+}
+impl Display for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::String(string) => write!(f, "{string}"),
+            Self::Pair(pair) => write!(f, "({} . {})", pair.car, pair.cdr),
+            Self::Closure(closure) => write!(f, "<closure #{}>", closure.function),
+            Self::Capture(_capture) => write!(f, "<capture>"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ObjectRef(pub usize);

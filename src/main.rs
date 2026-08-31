@@ -35,7 +35,7 @@ fn file(mut context: Context, path: &str) {
             eprintln!("ERROR: {err}");
             err.span.show(&src);
         }
-        Ok(value) => println!("result: {value}"),
+        Ok(value) => println!("result: {}", context.format_value(&value)),
     }
 }
 

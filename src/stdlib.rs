@@ -88,13 +88,7 @@ pub fn equals(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, R
 pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() > 0 {
         for arg in args {
-            match arg {
-                Value::Obj(obj_ref) => {
-                    let obj = ctx.heap.get(*obj_ref).unwrap(); // TODO: should handle incase the reference is invalid
-                    print!("{obj} ");
-                }
-                other => print!("{other} "),
-            }
+            print!("{} ", ctx.format_value(arg));
         }
         print!("\n");
         Ok(args.last().unwrap().clone())
@@ -103,5 +97,23 @@ pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Run
             RuntimeErrorKind::WrongNumOfArgs(0, 1),
             span,
         ))
+    }
+}
+
+pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::WrongNumOfArgs(args.len(), 2),
+            span,
+        ))
+    } else {
+        let pair = Pair {
+            car: args[0].clone(),
+            cdr: args[1].clone(),
+        };
+
+        let obj = ctx.heap.allocate(Object::Pair(pair));
+
+        Ok(Value::Obj(obj))
     }
 }

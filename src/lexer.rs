@@ -9,6 +9,8 @@ pub enum TokenKind {
     Symbol(String),
     String(String),
     Number(f64),
+    Dot,
+    Quote,
 }
 
 impl Display for TokenKind {
@@ -19,6 +21,8 @@ impl Display for TokenKind {
             Self::Number(_) => write!(f, "number"),
             Self::Symbol(_) => write!(f, "symbol"),
             Self::String(_) => write!(f, "string"),
+            Self::Dot => write!(f, "."),
+            Self::Quote => write!(f, "'"),
         }
     }
 }
@@ -63,6 +67,21 @@ impl<'a> Lexer<'a> {
             && ch.is_whitespace()
         {
             self.next_char();
+        }
+    }
+    fn skip_comment(&mut self) {
+        self.skip_whitespace();
+
+        while let Some(&ch) = self.chars.peek()
+            && ch == ';'
+        {
+            while let Some(&ch) = self.chars.peek()
+                && ch != '\n'
+            {
+                self.next_char();
+            }
+
+            self.skip_whitespace();
         }
     }
 
@@ -129,6 +148,21 @@ impl<'a> Lexer<'a> {
         Ok(Token::new(TokenKind::String(res), Span { start, end }))
     }
 
+    fn next_quote(&mut self) -> Result<Token, LexError> {
+        let start = self.cur;
+        self.next_char();
+        let end = self.cur;
+
+        Ok(Token::new(TokenKind::Quote, Span { start, end }))
+    }
+    fn next_dot(&mut self) -> Result<Token, LexError> {
+        let start = self.cur;
+        self.next_char();
+        let end = self.cur;
+
+        Ok(Token::new(TokenKind::Dot, Span { start, end }))
+    }
+
     fn next_atom(&mut self) -> Result<Token, LexError> {
         let start = self.cur;
 
@@ -155,6 +189,7 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self.skip_comment();
         self.skip_whitespace();
 
         let ch = *self.chars.peek()?;
@@ -162,6 +197,8 @@ impl<'a> Iterator for Lexer<'a> {
             '(' => self.next_oparen(),
             ')' => self.next_cparen(),
             '"' => self.next_string(),
+            '\'' => self.next_quote(),
+            '.' => self.next_dot(),
             _ => self.next_atom(),
         })
     }

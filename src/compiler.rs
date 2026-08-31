@@ -14,17 +14,27 @@ use crate::{common::*, diagnostics::*, parser::*};
 // }
 
 #[derive(Debug, Clone)]
+pub struct PairConst {
+    pub car: Box<Constant>,
+    pub cdr: Box<Constant>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Constant {
+    Symbol(SymbolId),
     String(String),
     Number(f64),
+    Pair(PairConst),
     Nil,
 }
 
 impl Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            Self::Symbol(symbol) => write!(f, "<symbol #{symbol}>"),
             Self::String(string) => write!(f, "\"{string}\""),
             Self::Number(num) => write!(f, "{num}"),
+            Self::Pair(pair) => write!(f, "({} . {})", pair.car, pair.cdr),
             Self::Nil => write!(f, "nil"),
         }
     }
@@ -32,6 +42,7 @@ impl Display for Constant {
 
 #[derive(Debug, Clone)]
 pub enum Instr {
+    PushNil,
     PushConst(ConstId),
     Pop,
     LoadGlobal(SymbolId),
@@ -58,6 +69,7 @@ impl Display for Instr {
             Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
             Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
             Instr::Pop => write!(f, "POP")?,
+            Instr::PushNil => write!(f, "PUSH_NIL")?,
             Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
             Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot}")?,
             Instr::Return => write!(f, "RETURN")?,
@@ -353,8 +365,7 @@ impl<'a> Compiler<'a> {
     fn compile_progn(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         let len = args.len();
         if len == 0 {
-            let id = self.unit.add_const(Constant::Nil);
-            self.emit(Instr::PushConst(id), span);
+            self.emit(Instr::PushNil, span);
         } else {
             for (idx, arg) in args.iter().enumerate() {
                 self.compile_expr(arg)?;
@@ -421,6 +432,39 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn compile_quoted_dattum(&mut self, arg: &Expr) -> Result<Constant, CompileError> {
+        match &arg.kind {
+            ExprKind::Symbol(symbol) => {
+                let id = self.ctx.symbols.intern(&symbol);
+                Ok(Constant::Symbol(id))
+            }
+            ExprKind::String(string) => Ok(Constant::String(string.clone())),
+            ExprKind::Number(number) => Ok(Constant::Number(number.clone())),
+            ExprKind::List(list) => {
+                let mut cur = Constant::Nil;
+                for expr in list.iter().rev() {
+                    let car = self.compile_quoted_dattum(expr)?;
+                    cur = Constant::Pair(PairConst {
+                        car: Box::new(car),
+                        cdr: Box::new(cur),
+                    });
+                }
+                Ok(cur)
+            }
+            ExprKind::DottedList { elements, tail } => {
+                let mut cur = self.compile_quoted_dattum(&tail)?;
+                for expr in elements.iter().rev() {
+                    let car = self.compile_quoted_dattum(expr)?;
+                    cur = Constant::Pair(PairConst {
+                        car: Box::new(car),
+                        cdr: Box::new(cur),
+                    });
+                }
+                Ok(cur)
+            }
+        }
+    }
+
     fn compile_args(&mut self, args: &[Expr]) -> Result<usize, CompileError> {
         let arity = args.len();
         for arg in args {
@@ -429,10 +473,32 @@ impl<'a> Compiler<'a> {
         Ok(arity)
     }
 
+    fn load_symbol(&mut self, symbol: &str, span: Span) {
+        let symbol_id = self.ctx.symbols.intern(symbol);
+        if let Some(local) = self.resolve_local(symbol_id) {
+            self.emit(Instr::LoadLocal(local), span);
+        } else if let Some(capture_id) = self.resolve_capture(symbol_id) {
+            self.emit(Instr::LoadCapture(capture_id), span);
+        } else {
+            self.emit(Instr::LoadGlobal(symbol_id), span);
+        }
+    }
+
     fn compile_list(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if let Some((head, args)) = args.split_first() {
             match &head.kind {
                 ExprKind::Symbol(symbol) => match symbol.as_str() {
+                    "quote" => {
+                        if args.len() != 1 {
+                            return Err(CompileError::new(
+                                CompileErrorKind::InvalidArgumentCount(args.len(), 1),
+                                span,
+                            ));
+                        }
+                        let constant = self.compile_quoted_dattum(&args[0])?;
+                        let id = self.unit.add_const(constant);
+                        self.emit(Instr::PushConst(id), span);
+                    }
                     "setq" => {
                         self.compile_setq(args, span)?;
                     }
@@ -454,14 +520,7 @@ impl<'a> Compiler<'a> {
                     _ => {
                         let arity = self.compile_args(args)?;
 
-                        let symbol_id = self.ctx.symbols.intern(symbol);
-                        if let Some(local) = self.resolve_local(symbol_id) {
-                            self.emit(Instr::LoadLocal(local), head.span);
-                        } else if let Some(capture_id) = self.resolve_capture(symbol_id) {
-                            self.emit(Instr::LoadCapture(capture_id), head.span);
-                        } else {
-                            self.emit(Instr::LoadGlobal(symbol_id), head.span);
-                        }
+                        self.load_symbol(symbol, head.span);
 
                         self.emit(Instr::Call(arity), span);
                     }
@@ -481,8 +540,7 @@ impl<'a> Compiler<'a> {
                 }
             }
         } else {
-            let id = self.unit.add_const(Constant::Nil);
-            self.emit(Instr::PushConst(id), span);
+            self.emit(Instr::PushNil, span);
         }
 
         Ok(())
@@ -491,14 +549,11 @@ impl<'a> Compiler<'a> {
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match &expr.kind {
             ExprKind::Symbol(symbol) => {
-                let id = self.ctx.symbols.intern(symbol);
-                if let Some(local) = self.resolve_local(id) {
-                    self.emit(Instr::LoadLocal(local), expr.span);
-                } else if let Some(capture_id) = self.resolve_capture(id) {
-                    self.emit(Instr::LoadCapture(capture_id), expr.span);
-                } else {
-                    self.emit(Instr::LoadGlobal(id), expr.span);
+                if symbol == "nil" {
+                    self.emit(Instr::PushNil, expr.span);
+                    return Ok(());
                 }
+                self.load_symbol(symbol, expr.span);
             }
             ExprKind::Number(value) => {
                 let id = self.unit.add_const(Constant::Number(*value));
@@ -509,6 +564,15 @@ impl<'a> Compiler<'a> {
                 self.emit(Instr::PushConst(id), expr.span);
             }
             ExprKind::List(list) => self.compile_list(list, expr.span)?,
+            ExprKind::DottedList {
+                elements: _,
+                tail: _,
+            } => {
+                return Err(CompileError::new(
+                    CompileErrorKind::UnquotedDottedList,
+                    expr.span,
+                ));
+            }
         }
         Ok(())
     }
@@ -526,8 +590,7 @@ impl<'a> Compiler<'a> {
         let len = module.len();
         if len == 0 {
             let span = Span { start: 0, end: 0 };
-            let id = compiler.unit.add_const(Constant::Nil);
-            compiler.emit(Instr::PushConst(id), span);
+            compiler.emit(Instr::PushNil, span);
             compiler.emit(Instr::Return, span);
         } else {
             for (idx, arg) in module.iter().enumerate() {

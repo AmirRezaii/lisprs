@@ -2,7 +2,7 @@ use crate::{
     common::{Context, Value},
     compiler::Compiler,
     diagnostics::*,
-    lexer::Lexer,
+    lexer::{Lexer, Token},
     parser::{Expr, Parser},
     runtime::Vm,
 };
@@ -14,6 +14,13 @@ mod lexer;
 mod parser;
 mod runtime;
 pub mod stdlib;
+
+pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
+    let lexer = Lexer::new(source);
+    let result = lexer.collect::<Result<Vec<Token>, LexError>>()?;
+
+    Ok(result)
+}
 
 pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
     let mut result: Vec<Expr> = Vec::new();
@@ -33,6 +40,6 @@ pub fn execute_module(source_code: &str, ctx: &mut Context) -> Result<Value, Err
     let mut vm = Vm::new(ctx);
     let ast = parse_module(source_code)?;
     let module = Compiler::compile(&ast, vm.ctx)?;
-    // println!("{module}");
-    Ok(vm.run(module)?)
+    let result = vm.run(module)?;
+    Ok(result)
 }
