@@ -473,7 +473,7 @@ impl<'a> Compiler<'a> {
         Ok(arity)
     }
 
-    fn load_symbol(&mut self, symbol: &str, span: Span) {
+    fn load_variable(&mut self, symbol: &str, span: Span) {
         let symbol_id = self.ctx.symbols.intern(symbol);
         if let Some(local) = self.resolve_local(symbol_id) {
             self.emit(Instr::LoadLocal(local), span);
@@ -520,7 +520,7 @@ impl<'a> Compiler<'a> {
                     _ => {
                         let arity = self.compile_args(args)?;
 
-                        self.load_symbol(symbol, head.span);
+                        self.load_variable(symbol, head.span);
 
                         self.emit(Instr::Call(arity), span);
                     }
@@ -553,7 +553,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Instr::PushNil, expr.span);
                     return Ok(());
                 }
-                self.load_symbol(symbol, expr.span);
+                self.load_variable(symbol, expr.span);
             }
             ExprKind::Number(value) => {
                 let id = self.unit.add_const(Constant::Number(*value));

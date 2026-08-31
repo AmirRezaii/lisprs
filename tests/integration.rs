@@ -82,6 +82,11 @@ fn multiple_closures_share_captured_variable() {
 }
 
 #[test]
+fn capture_shadowing() {
+    assert_number(run_file("capture_shadowing.el").unwrap(), 1.0);
+}
+
+#[test]
 fn undefined_variable_is_runtime_error() {
     let err = run_file("errors.el").unwrap_err();
 
