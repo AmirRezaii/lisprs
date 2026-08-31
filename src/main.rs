@@ -45,6 +45,6 @@ fn main() {
     if false {
         repl(context);
     } else {
-        file(context, "tests/programs/returns.el");
+        file(context, "test.el");
     }
 }

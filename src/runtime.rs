@@ -1,16 +1,16 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{fmt::Display, rc::Rc};
 
 use crate::{common::*, compiler::*, diagnostics::*};
 
 type StackIndex = usize;
 
 #[derive(Debug, Clone)]
-pub struct Closure {
+pub struct ClosureObj {
     unit: Rc<CompiledUnit>,
     function: FunctionId,
-    captures: Vec<CaptureCell>,
+    captures: Vec<ObjRef>,
 }
-impl Closure {
+impl ClosureObj {
     fn new(unit: Rc<CompiledUnit>, function: FunctionId) -> Self {
         Self {
             unit,
@@ -20,26 +20,77 @@ impl Closure {
     }
 }
 
+pub struct Heap {
+    objects: Vec<Option<Obj>>,
+}
+
+impl Heap {
+    pub fn new() -> Self {
+        Self {
+            objects: Vec::new(),
+        }
+    }
+
+    pub fn allocate(&mut self, value: Obj) -> ObjRef {
+        for (i, obj) in self.objects.iter_mut().enumerate() {
+            if obj.is_none() {
+                obj.replace(value);
+                return ObjRef(i);
+            }
+        }
+
+        let index = self.objects.len();
+        self.objects.push(Some(value));
+        ObjRef(index)
+    }
+
+    pub fn get(&self, obj_ref: ObjRef) -> Option<&Obj> {
+        self.objects[obj_ref.0].as_ref()
+    }
+    pub fn take(&mut self, obj_ref: ObjRef) -> Option<Obj> {
+        self.objects[obj_ref.0].take()
+    }
+    pub fn replace(&mut self, obj_ref: ObjRef, value: Obj) -> Option<Obj> {
+        self.objects[obj_ref.0].replace(value)
+    }
+}
+
+pub enum Obj {
+    String(String),
+    Closure(ClosureObj),
+    Capture(Capture),
+    // Pair
+}
+impl Display for Obj {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::String(string) => write!(f, "{string}"),
+            Self::Closure(closure) => write!(f, "(closure {})", closure.function),
+            Self::Capture(_capture) => write!(f, "capture"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ObjRef(pub usize);
+
 struct CallFrame {
-    closure: Closure,
+    closure: ObjRef,
     ip: usize,
     base: usize,
 }
 
 #[derive(Debug, Clone)]
-enum Capture {
+pub enum Capture {
     Open(StackIndex),
     Closed(Value),
 }
-
-type CaptureCell = Rc<RefCell<Capture>>;
 
 pub struct Vm<'ctx> {
     stack: Vec<Value>,
     pub ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
-
-    open_captures: Vec<CaptureCell>,
+    open_captures: Vec<ObjRef>,
 }
 
 impl<'ctx> Vm<'ctx> {
@@ -67,15 +118,22 @@ impl<'ctx> Vm<'ctx> {
 
         let mut i: usize = 0;
         while i < self.open_captures.len() {
-            let open = Rc::clone(&self.open_captures[i]);
-            let mut capture = open.borrow_mut();
-            if let Capture::Open(stack_id) = *capture {
-                if stack_id >= base {
-                    *capture = Capture::Closed(self.stack[stack_id].clone());
-                    self.open_captures.swap_remove(i);
-                    continue;
+            let capture_ref = self.open_captures[i];
+            let capture = self.ctx.heap.get(capture_ref).unwrap();
+            if let Obj::Capture(capture) = capture {
+                if let Capture::Open(stack_id) = *capture {
+                    if stack_id >= base {
+                        self.ctx.heap.replace(
+                            capture_ref,
+                            Obj::Capture(Capture::Closed(self.stack[stack_id].clone())),
+                        );
+                        self.open_captures.swap_remove(i);
+                        continue;
+                    }
+                    i += 1;
+                } else {
+                    unreachable!();
                 }
-                i += 1;
             } else {
                 unreachable!();
             }
@@ -86,11 +144,26 @@ impl<'ctx> Vm<'ctx> {
         Ok(())
     }
 
+    fn push_const(&mut self, constant: Constant) {
+        match constant {
+            Constant::String(string) => {
+                let obj_ref = self.ctx.heap.allocate(Obj::String(string));
+                self.stack.push(Value::Obj(obj_ref));
+            }
+            Constant::Number(number) => self.stack.push(Value::Number(number)),
+            Constant::Nil => self.stack.push(Value::Nil),
+        }
+    }
+
     pub fn run(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, RuntimeError> {
         assert!(unit.functions.len() > 0);
         // entry call frame
+        let closure_ref = self
+            .ctx
+            .heap
+            .allocate(Obj::Closure(ClosureObj::new(Rc::clone(&unit), 0)));
         self.frames.push(CallFrame {
-            closure: Closure::new(Rc::clone(&unit), 0), // entry function
+            closure: closure_ref, // entry function
             ip: 0,
             base: 0,
         });
@@ -100,21 +173,28 @@ impl<'ctx> Vm<'ctx> {
                 return Ok(self.stack.pop().unwrap());
             }
 
-            let (unit, instr, base, span) = {
+            let (closure, unit, instr, base, span) = {
+                let closure = {
+                    let closure_obj = self.ctx.heap.get(self.current().closure).unwrap();
+                    match closure_obj {
+                        Obj::Closure(closure) => closure.clone(),
+                        _ => unreachable!(),
+                    }
+                };
                 let frame = self.current_mut();
-                let unit = Rc::clone(&frame.closure.unit);
+                let unit = Rc::clone(&closure.unit);
 
-                let body = &unit.functions[frame.closure.function].chunk;
+                let body = &unit.functions[closure.function].chunk;
                 let instr = body.code[frame.ip].clone();
                 let span = body.spans.get(&frame.ip).cloned();
 
                 frame.ip += 1;
 
-                (unit, instr, frame.base, span)
+                (closure, unit, instr, frame.base, span)
             };
 
             match instr {
-                Instr::PushConst(const_id) => self.stack.push(unit.constants[const_id].clone()),
+                Instr::PushConst(const_id) => self.push_const(unit.constants[const_id].clone()),
                 Instr::Pop => {
                     self.stack.pop().ok_or(RuntimeError::new(
                         RuntimeErrorKind::StackUnderflow,
@@ -144,10 +224,17 @@ impl<'ctx> Vm<'ctx> {
                     );
                 }
                 Instr::LoadCapture(capture_id) => {
-                    let capture = self.current().closure.captures[capture_id].borrow().clone();
-                    match capture {
-                        Capture::Open(stack_id) => self.stack.push(self.stack[stack_id].clone()),
-                        Capture::Closed(captured) => self.stack.push(captured),
+                    let capture_ref = closure.captures[capture_id];
+                    let capture = self.ctx.heap.get(capture_ref).unwrap();
+                    if let Obj::Capture(capture) = capture {
+                        match capture {
+                            Capture::Open(stack_id) => {
+                                self.stack.push(self.stack[*stack_id].clone())
+                            }
+                            Capture::Closed(captured) => self.stack.push(captured.clone()),
+                        }
+                    } else {
+                        unreachable!();
                     }
                 }
                 Instr::SetCapture(capture_id) => {
@@ -160,16 +247,18 @@ impl<'ctx> Vm<'ctx> {
                         ))?
                         .clone();
 
-                    let capture = self.current().closure.captures[capture_id]
-                        .borrow_mut()
-                        .clone();
-
-                    match capture {
-                        Capture::Open(stack_id) => self.stack[stack_id] = value,
-                        Capture::Closed(_) => {
-                            *self.current().closure.captures[capture_id].borrow_mut() =
-                                Capture::Closed(value)
+                    let capture_ref = closure.captures[capture_id];
+                    if let Obj::Capture(capture) = self.ctx.heap.get(capture_ref).unwrap() {
+                        match capture {
+                            Capture::Open(stack_id) => self.stack[*stack_id] = value,
+                            Capture::Closed(_) => {
+                                self.ctx
+                                    .heap
+                                    .replace(capture_ref, Obj::Capture(Capture::Closed(value)));
+                            }
                         }
+                    } else {
+                        unreachable!();
                     }
                 }
                 Instr::LoadLocal(slot) => {
@@ -214,32 +303,42 @@ impl<'ctx> Vm<'ctx> {
                             }
 
                             args.reverse();
-                            self.stack.push(f(&args[..], span.unwrap())?);
+                            let result = f(&mut self.ctx, &args[..], span.unwrap())?;
+                            self.stack.push(result);
                         }
-                        Value::Closure(closure) => {
-                            let arity = closure.unit.functions[closure.function].arity;
+                        Value::Obj(obj_ref) => {
+                            let closure = self.ctx.heap.get(obj_ref).unwrap();
+                            match closure {
+                                Obj::Closure(closure) => {
+                                    let arity = closure.unit.functions[closure.function].arity;
 
-                            if argc != arity {
-                                return Err(RuntimeError::new(
-                                    RuntimeErrorKind::WrongNumOfArgs(argc, arity),
-                                    span.unwrap(),
-                                ));
-                            }
+                                    if argc != arity {
+                                        return Err(RuntimeError::new(
+                                            RuntimeErrorKind::WrongNumOfArgs(argc, arity),
+                                            span.unwrap(),
+                                        ));
+                                    }
 
-                            let base =
-                                self.stack
-                                    .len()
-                                    .checked_sub(arity)
-                                    .ok_or(RuntimeError::new(
-                                        RuntimeErrorKind::StackUnderflow,
+                                    let base = self.stack.len().checked_sub(arity).ok_or(
+                                        RuntimeError::new(
+                                            RuntimeErrorKind::StackUnderflow,
+                                            span.unwrap(),
+                                        ),
+                                    )?;
+
+                                    self.frames.push(CallFrame {
+                                        closure: obj_ref,
+                                        ip: 0,
+                                        base,
+                                    });
+                                }
+                                _ => {
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::NotAFunction(f.to_string()),
                                         span.unwrap(),
-                                    ))?;
-
-                            self.frames.push(CallFrame {
-                                closure,
-                                ip: 0,
-                                base,
-                            });
+                                    ));
+                                }
+                            }
                         }
                         _ => {
                             return Err(RuntimeError::new(
@@ -251,7 +350,7 @@ impl<'ctx> Vm<'ctx> {
                 }
                 Instr::MakeClosure(id) => {
                     assert!(id < unit.functions.len());
-                    let mut closure = Closure {
+                    let mut result = ClosureObj {
                         unit: Rc::clone(&unit),
                         function: id,
                         captures: Vec::new(),
@@ -259,17 +358,17 @@ impl<'ctx> Vm<'ctx> {
 
                     for capture in &unit.functions[id].captures_src {
                         if capture.is_local {
-                            let capture = Rc::new(RefCell::new(Capture::Open(base + capture.slot)));
-                            self.open_captures.push(Rc::clone(&capture));
-                            closure.captures.push(capture);
+                            let capture = Obj::Capture(Capture::Open(base + capture.slot));
+                            let capture_ref = self.ctx.heap.allocate(capture);
+                            self.open_captures.push(capture_ref);
+                            result.captures.push(capture_ref);
                         } else {
-                            closure
-                                .captures
-                                .push(Rc::clone(&self.current().closure.captures[capture.slot]));
+                            result.captures.push(closure.captures[capture.slot]);
                         }
                     }
 
-                    self.stack.push(Value::Closure(closure));
+                    let obj_ref = self.ctx.heap.allocate(Obj::Closure(result));
+                    self.stack.push(Value::Obj(obj_ref));
                 }
                 Instr::ExitScope(slot) => {
                     self.exit_scope(base + slot, span.unwrap())?;

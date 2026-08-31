@@ -14,6 +14,23 @@ use crate::{common::*, diagnostics::*, parser::*};
 // }
 
 #[derive(Debug, Clone)]
+pub enum Constant {
+    String(String),
+    Number(f64),
+    Nil,
+}
+
+impl Display for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::String(string) => write!(f, "\"{string}\""),
+            Self::Number(num) => write!(f, "{num}"),
+            Self::Nil => write!(f, "nil"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Instr {
     PushConst(ConstId),
     Pop,
@@ -336,7 +353,7 @@ impl<'a> Compiler<'a> {
     fn compile_progn(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         let len = args.len();
         if len == 0 {
-            let id = self.unit.add_const(Value::Nil);
+            let id = self.unit.add_const(Constant::Nil);
             self.emit(Instr::PushConst(id), span);
         } else {
             for (idx, arg) in args.iter().enumerate() {
@@ -464,7 +481,7 @@ impl<'a> Compiler<'a> {
                 }
             }
         } else {
-            let id = self.unit.add_const(Value::Nil);
+            let id = self.unit.add_const(Constant::Nil);
             self.emit(Instr::PushConst(id), span);
         }
 
@@ -484,11 +501,11 @@ impl<'a> Compiler<'a> {
                 }
             }
             ExprKind::Number(value) => {
-                let id = self.unit.add_const(Value::Number(*value));
+                let id = self.unit.add_const(Constant::Number(*value));
                 self.emit(Instr::PushConst(id), expr.span);
             }
             ExprKind::String(value) => {
-                let id = self.unit.add_const(Value::String(value.clone()));
+                let id = self.unit.add_const(Constant::String(value.clone()));
                 self.emit(Instr::PushConst(id), expr.span);
             }
             ExprKind::List(list) => self.compile_list(list, expr.span)?,
@@ -509,7 +526,7 @@ impl<'a> Compiler<'a> {
         let len = module.len();
         if len == 0 {
             let span = Span { start: 0, end: 0 };
-            let id = compiler.unit.add_const(Value::Nil);
+            let id = compiler.unit.add_const(Constant::Nil);
             compiler.emit(Instr::PushConst(id), span);
             compiler.emit(Instr::Return, span);
         } else {

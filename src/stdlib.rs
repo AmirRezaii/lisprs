@@ -1,6 +1,6 @@
 use crate::{common::*, diagnostics::*};
 
-pub fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn add(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 0.0;
 
     for arg in args {
@@ -18,7 +18,7 @@ pub fn add(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     Ok(Value::Number(result))
 }
 
-pub fn multiply(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn multiply(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 1.0;
 
     for arg in args {
@@ -36,7 +36,7 @@ pub fn multiply(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     Ok(Value::Number(result))
 }
 
-pub fn subtract(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn subtract(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.is_empty() {
         return Err(RuntimeError::new(
             RuntimeErrorKind::WrongNumOfArgs(0, 1),
@@ -71,7 +71,7 @@ pub fn subtract(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     Ok(Value::Number(result))
 }
 
-pub fn equals(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn equals(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(RuntimeError::new(
             RuntimeErrorKind::WrongNumOfArgs(args.len(), 2),
@@ -85,10 +85,16 @@ pub fn equals(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     }
 }
 
-pub fn print(args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() > 0 {
         for arg in args {
-            print!("{} ", arg);
+            match arg {
+                Value::Obj(obj_ref) => {
+                    let obj = ctx.heap.get(*obj_ref).unwrap(); // TODO: should handle incase the reference is invalid
+                    print!("{obj} ");
+                }
+                other => print!("{other} "),
+            }
         }
         print!("\n");
         Ok(args.last().unwrap().clone())
