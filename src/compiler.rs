@@ -371,7 +371,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_let_rec(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+    fn compile_let(
+        &mut self,
+        args: &[Expr],
+        span: Span,
+        recursive: bool,
+    ) -> Result<(), CompileError> {
         self.begin_scope();
         if args.len() < 2 {
             return Err(CompileError::new(
@@ -384,6 +389,7 @@ impl<'a> Compiler<'a> {
 
         let (locals_exprs, body_exprs) = args.split_first().unwrap();
         let locals_exprs = locals_exprs.into_list()?;
+        let mut names: Vec<&str> = Vec::new();
 
         for local in locals_exprs {
             let span = local.span;
@@ -399,8 +405,19 @@ impl<'a> Compiler<'a> {
             let value = &local[1];
 
             self.compile_expr(value)?;
-            self.add_local(name.into_symbol()?);
+            if !recursive {
+                names.push(name.into_symbol()?);
+            } else {
+                self.add_local(name.into_symbol()?);
+            }
         }
+
+        if !recursive {
+            for name in names {
+                self.add_local(name);
+            }
+        }
+
         self.compile_progn(body_exprs, span)?;
         self.emit(Instr::ExitScope(first_slot), span);
 
@@ -516,7 +533,10 @@ impl<'a> Compiler<'a> {
                         self.compile_defun(args, span)?;
                     }
                     "let*" => {
-                        self.compile_let_rec(args, span)?;
+                        self.compile_let(args, span, true)?;
+                    }
+                    "let" => {
+                        self.compile_let(args, span, false)?;
                     }
                     "return" => {
                         self.compile_return(args, span)?;
