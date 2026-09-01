@@ -267,7 +267,7 @@ impl<'ctx> Vm<'ctx> {
 
                                     if argc != arity {
                                         return Err(RuntimeError::new(
-                                            RuntimeErrorKind::WrongNumOfArgs(argc, arity),
+                                            RuntimeErrorKind::InvalidArgumentCount(argc, arity),
                                             span.unwrap(),
                                         ));
                                     }

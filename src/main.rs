@@ -19,7 +19,7 @@ fn repl(mut context: Context) {
                 eprintln!("ERROR: {err}");
                 err.span.show(&src);
             }
-            Ok(value) => println!("result: {value}"),
+            Ok(value) => println!("result: {}", context.format_value(&value)),
         }
         src.clear();
         print!("> ");

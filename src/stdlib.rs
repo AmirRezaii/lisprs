@@ -39,7 +39,7 @@ pub fn multiply(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value,
 pub fn subtract(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.is_empty() {
         return Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(0, 1),
+            RuntimeErrorKind::InvalidArgumentCount(0, 1),
             span,
         ));
     }
@@ -74,7 +74,7 @@ pub fn subtract(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value,
 pub fn equals(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         return Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(args.len(), 2),
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
             span,
         ));
     }
@@ -94,7 +94,7 @@ pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Run
         Ok(args.last().unwrap().clone())
     } else {
         Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(0, 1),
+            RuntimeErrorKind::InvalidArgumentCount(0, 1),
             span,
         ))
     }
@@ -103,7 +103,7 @@ pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Run
 pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(args.len(), 2),
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
             span,
         ))
     } else {
@@ -121,7 +121,7 @@ pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
 pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 1 {
         Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
             span,
         ))
     } else {
@@ -143,7 +143,7 @@ pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
 pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
             span,
         ))
     } else {
@@ -168,7 +168,7 @@ pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runti
 pub fn cdr(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
-            RuntimeErrorKind::WrongNumOfArgs(args.len(), 1),
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
             span,
         ))
     } else {

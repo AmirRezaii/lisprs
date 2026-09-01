@@ -198,6 +198,7 @@ impl<'a> Compiler<'a> {
 
         slot
     }
+
     fn resolve_local(&mut self, name: SymbolId) -> Option<Slot> {
         self.current()
             .locals
@@ -288,15 +289,7 @@ impl<'a> Compiler<'a> {
         self.compile_lambda(args, span)?;
 
         let symbol = name.into_symbol()?;
-        let symbol = self.ctx.symbols.intern(symbol);
-
-        if let Some(slot) = self.resolve_local(symbol) {
-            self.emit(Instr::SetLocal(slot), span);
-        } else if let Some(capture) = self.resolve_capture(symbol) {
-            self.emit(Instr::SetCapture(capture), span);
-        } else {
-            self.emit(Instr::SetGlobal(symbol), span);
-        }
+        self.set_variable(symbol, span);
 
         Ok(())
     }
@@ -481,6 +474,17 @@ impl<'a> Compiler<'a> {
             self.emit(Instr::LoadCapture(capture_id), span);
         } else {
             self.emit(Instr::LoadGlobal(symbol_id), span);
+        }
+    }
+    fn set_variable(&mut self, symbol: &str, span: Span) {
+        let symbol = self.ctx.symbols.intern(symbol);
+
+        if let Some(slot) = self.resolve_local(symbol) {
+            self.emit(Instr::SetLocal(slot), span);
+        } else if let Some(capture) = self.resolve_capture(symbol) {
+            self.emit(Instr::SetCapture(capture), span);
+        } else {
+            self.emit(Instr::SetGlobal(symbol), span);
         }
     }
 

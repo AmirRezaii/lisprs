@@ -33,7 +33,7 @@ impl Expr {
             ExprKind::Symbol(symbol) => Ok(symbol),
             other => Err(CompileError::new(
                 CompileErrorKind::InvalidArgument {
-                    got: other.to_string(),
+                    given: other.to_string(),
                     expected: ExprKind::Symbol("symbol".into()).to_string(),
                 },
                 span,
@@ -60,7 +60,7 @@ impl Expr {
             ExprKind::List(list) => Ok(list),
             other => Err(CompileError::new(
                 CompileErrorKind::InvalidArgument {
-                    got: other.to_string(),
+                    given: other.to_string(),
                     expected: ExprKind::List(Vec::new()).to_string(),
                 },
                 span,

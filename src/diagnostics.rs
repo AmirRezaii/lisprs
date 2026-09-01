@@ -67,13 +67,17 @@ impl Display for Error {
                 ParseErrorKind::Lex(_) => unreachable!(),
             },
             ErrorKind::Compile(err) => match err {
-                CompileErrorKind::InvalidArgument { got, expected } => {
-                    write!(f, "invalid argument: expected {expected} but got {got}")
-                }
-                CompileErrorKind::InvalidArgumentCount(got, expected) => {
+                CompileErrorKind::InvalidArgument { given, expected } => {
                     write!(
                         f,
-                        "invalid argument count: expected {expected} but got {got}"
+                        "expected argument of type '{expected}' but got '{given}'"
+                    )
+                }
+                CompileErrorKind::InvalidArgumentCount(given, expected) => {
+                    write!(
+                        f,
+                        "expected {} number of arguments but got {}",
+                        expected, given
                     )
                 }
                 CompileErrorKind::UnexpectedCall(expr) => {
@@ -93,7 +97,7 @@ impl Display for Error {
                 RuntimeErrorKind::TypeMismatch(given, expected) => {
                     write!(f, "expected type '{}' but got '{}'", expected, given)
                 }
-                RuntimeErrorKind::WrongNumOfArgs(given, expected) => {
+                RuntimeErrorKind::InvalidArgumentCount(given, expected) => {
                     write!(
                         f,
                         "expected {} number of arguments but got {}",
@@ -157,7 +161,7 @@ impl From<LexError> for ParseError {
 
 #[derive(Debug)]
 pub enum CompileErrorKind {
-    InvalidArgument { got: String, expected: String },
+    InvalidArgument { given: String, expected: String },
     // TODO: Right now we don't know if the argument is "at least" or "exact" or "range"
     InvalidArgumentCount(usize, usize),
     UnexpectedCall(String),
@@ -180,7 +184,7 @@ pub enum RuntimeErrorKind {
     UndefinedVariable,
     NotAFunction(String),
     TypeMismatch(String, String),
-    WrongNumOfArgs(usize, usize),
+    InvalidArgumentCount(usize, usize),
     StackUnderflow,
 }
 
