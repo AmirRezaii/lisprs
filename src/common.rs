@@ -1,18 +1,15 @@
 use std::{any::type_name_of_val, collections::HashMap, fmt::Display, rc::Rc};
 
 use crate::{
-    compiler::{Constant, FunctionProto},
+    compiler::{CompiledUnit, Compiler, FunctionId, StackIndex},
     diagnostics::*,
-    runtime::{Heap, Vm},
+    lexer::{Lexer, Token},
+    parser::{Expr, Parser},
     stdlib,
+    vm::Vm,
 };
 
-pub type ConstId = usize;
-pub type FunctionId = usize;
-pub type StackIndex = usize;
-
 pub type SymbolId = usize;
-pub type CaptureIndex = usize;
 
 pub struct SymbolTable {
     names: Vec<String>,
@@ -45,42 +42,44 @@ impl SymbolTable {
 
 type Globals = HashMap<SymbolId, Value>;
 
-pub struct Context {
+pub struct Lisp {
     pub symbols: SymbolTable,
     pub globals: Globals,
     pub heap: Heap,
-    pub temp_roots: Vec<ObjectRef>,
 }
 
-impl Context {
+impl Lisp {
     pub fn new() -> Self {
         Self {
             symbols: SymbolTable::new(),
             globals: Globals::new(),
             heap: Heap::new(),
-            temp_roots: Vec::new(),
         }
     }
-    pub fn stdlib() -> Self {
-        let mut ctx = Self::new();
-
-        ctx.define_native("+", stdlib::add);
-        ctx.define_native("*", stdlib::multiply);
-        ctx.define_native("-", stdlib::subtract);
-        ctx.define_native("eq", stdlib::eq);
-        ctx.define_native("equal", stdlib::equal);
-        ctx.define_native("print", stdlib::print);
-        ctx.define_native("cons", stdlib::cons);
-        ctx.define_native("list", stdlib::list);
-        ctx.define_native("car", stdlib::car);
-        ctx.define_native("cdr", stdlib::cdr);
-        ctx.define_native("gc", stdlib::gc);
-        ctx.define_native("heap", stdlib::heap);
-
-        ctx
+    pub fn stdlib(&mut self) {
+        self.define_native_fn("+", stdlib::add);
+        self.define_native_fn("*", stdlib::multiply);
+        self.define_native_fn("-", stdlib::subtract);
+        self.define_native_fn("eq", stdlib::eq);
+        self.define_native_fn("equal", stdlib::equal);
+        self.define_native_fn("print", stdlib::print);
+        self.define_native_fn("cons", stdlib::cons);
+        self.define_native_fn("list", stdlib::list);
+        self.define_native_fn("car", stdlib::car);
+        self.define_native_fn("cdr", stdlib::cdr);
+        self.define_native_fn("gc", stdlib::gc);
+        self.define_native_fn("heap", stdlib::heap);
     }
 
-    pub fn define_native(&mut self, symbol: &str, func: NativeFn) {
+    pub fn execute(&mut self, source_code: &str) -> Result<Value, Error> {
+        let mut vm = Vm::new(self);
+        let ast = parse_module(source_code)?;
+        let unit = Compiler::compile(&ast, &mut vm.ctx.symbols)?;
+        let result = vm.run(unit)?;
+        Ok(result)
+    }
+
+    pub fn define_native_fn(&mut self, symbol: &str, func: NativeFn) {
         let id = self.symbols.intern(symbol);
         self.globals.insert(id, Value::NativeFunction(func));
     }
@@ -140,52 +139,6 @@ impl Context {
     }
 }
 
-#[derive(Debug)]
-pub struct CompiledUnit {
-    pub functions: Vec<FunctionProto>,
-    pub constants: Vec<Constant>,
-}
-
-impl CompiledUnit {
-    pub fn new() -> Self {
-        Self {
-            functions: Vec::new(),
-            constants: Vec::new(),
-        }
-    }
-
-    pub fn add_func(&mut self, arity: usize) -> FunctionId {
-        let func_id = self.functions.len();
-        self.functions.push(FunctionProto::new(arity));
-        func_id
-    }
-
-    pub fn add_const(&mut self, constant: Constant) -> ConstId {
-        let id = self.constants.len();
-        self.constants.push(constant);
-        id
-    }
-}
-
-impl Display for CompiledUnit {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        writeln!(f, "constants:")?;
-        for (idx, c) in self.constants.iter().enumerate() {
-            writeln!(f, "  {idx}: {c}")?;
-        }
-
-        for func in &self.functions {
-            writeln!(f, "func(arity: {}):", func.arity)?;
-            for c in &func.chunk.code {
-                write!(f, "  ")?;
-                writeln!(f, "{c}")?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
 pub type NativeFn = fn(&mut Vm, &[Value], Span) -> Result<Value, RuntimeError>;
 
 #[derive(Debug, Clone)]
@@ -197,40 +150,6 @@ pub enum Value {
     Nil,
 }
 
-impl Value {
-    pub fn symbol(self) -> Option<String> {
-        use Value::*;
-        match self {
-            Symbol(symbol) => Some(symbol),
-            _ => None,
-        }
-    }
-    pub fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol(_))
-    }
-    pub fn number(self) -> Option<f64> {
-        use Value::*;
-        match self {
-            Number(number) => Some(number),
-            _ => None,
-        }
-    }
-    pub fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_))
-    }
-}
-
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
-        Value::Number(value)
-    }
-}
-impl From<i32> for Value {
-    fn from(value: i32) -> Self {
-        Value::Number(value.into())
-    }
-}
-
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -240,6 +159,136 @@ impl Display for Value {
             Value::Obj(obj_ref) => write!(f, "<object #{}>", obj_ref.0),
             Value::Nil => write!(f, "nil"),
         }
+    }
+}
+
+pub struct HeapObject {
+    marked: bool,
+    object: Object,
+}
+impl HeapObject {
+    fn new(object: Object) -> Self {
+        Self {
+            marked: false,
+            object,
+        }
+    }
+}
+
+pub struct Heap {
+    objects: Vec<Option<HeapObject>>,
+    allocated: usize,
+    next_gc: usize,
+}
+
+impl Heap {
+    pub fn new() -> Self {
+        Self {
+            objects: Vec::new(),
+            allocated: 0,
+            next_gc: 128,
+        }
+    }
+
+    pub fn should_collect(&self) -> bool {
+        self.allocated >= self.next_gc
+    }
+
+    pub fn allocate(&mut self, value: Object) -> ObjectRef {
+        for (i, obj) in self.objects.iter_mut().enumerate() {
+            if obj.is_none() {
+                obj.replace(HeapObject::new(value));
+                return ObjectRef(i);
+            }
+        }
+
+        let index = self.objects.len();
+        self.objects.push(Some(HeapObject::new(value)));
+        self.allocated += 1;
+        ObjectRef(index)
+    }
+
+    pub fn get(&self, obj_ref: ObjectRef) -> Option<&Object> {
+        self.objects[obj_ref.0]
+            .as_ref()
+            .map(|heap_object| &heap_object.object)
+    }
+    pub fn get_mut(&mut self, obj_ref: ObjectRef) -> Option<&mut Object> {
+        self.objects[obj_ref.0]
+            .as_mut()
+            .map(|heap_object| &mut heap_object.object)
+    }
+
+    pub fn take(&mut self, obj_ref: ObjectRef) -> Option<Object> {
+        self.objects[obj_ref.0]
+            .take()
+            .map(|heap_object| heap_object.object)
+    }
+    pub fn replace(&mut self, obj_ref: ObjectRef, value: Object) -> Option<Object> {
+        self.objects[obj_ref.0]
+            .replace(HeapObject::new(value))
+            .map(|heap_object| heap_object.object)
+    }
+
+    pub fn sweep(&mut self) {
+        let mut live = 0;
+        for obj in &mut self.objects {
+            if let Some(o) = obj {
+                if !o.marked {
+                    // println!("sweeped {}", o.object);
+                    obj.take();
+                } else {
+                    live += 1;
+                    o.marked = false;
+                }
+            }
+        }
+        self.allocated = live;
+        self.next_gc = (live * 2).max(128);
+    }
+
+    pub fn trace(&mut self, obj_ref: ObjectRef) {
+        let obj = self.get(obj_ref).unwrap();
+        match obj {
+            Object::String(_) => (),
+            Object::Closure(closure) => {
+                for obj_ref in closure.captures_ref.clone() {
+                    self.mark(obj_ref);
+                }
+            }
+            Object::Pair(Pair { car, cdr }) => {
+                let car = car.clone();
+                let cdr = cdr.clone();
+                self.mark_value(&car);
+                self.mark_value(&cdr);
+            }
+            Object::Capture(Capture::Closed(capture)) => {
+                if let Value::Obj(capture_ref) = capture {
+                    self.mark(*capture_ref);
+                }
+            }
+            Object::Capture(_) => (),
+        }
+    }
+
+    pub fn is_marked(&self, obj_ref: ObjectRef) -> bool {
+        self.objects[obj_ref.0].as_ref().unwrap().marked
+    }
+    pub fn set_marked(&mut self, obj_ref: ObjectRef, value: bool) {
+        self.objects[obj_ref.0].as_mut().unwrap().marked = value;
+    }
+    pub fn mark(&mut self, obj_ref: ObjectRef) {
+        if self.is_marked(obj_ref) {
+            return;
+        }
+
+        self.set_marked(obj_ref, true);
+        self.trace(obj_ref);
+    }
+    pub fn mark_value(&mut self, value: &Value) {
+        if let Value::Obj(obj_ref) = value {
+            self.mark(*obj_ref);
+        };
     }
 }
 
@@ -280,24 +329,6 @@ pub enum Object {
     Closure(Closure),
     Capture(Capture),
 }
-impl Object {
-    pub fn trace(&self, heap: &mut Heap) {
-        match self {
-            Object::String(_) => (),
-            Object::Closure(closure) => {
-                for obj_ref in &closure.captures_ref {
-                    heap.mark(*obj_ref);
-                }
-            }
-            Object::Pair(Pair { car, cdr }) => {
-                heap.mark_value(car);
-                heap.mark_value(cdr);
-            }
-            Object::Capture(Capture::Closed(capture)) => heap.mark_value(capture),
-            Object::Capture(_) => (),
-        }
-    }
-}
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -311,3 +342,23 @@ impl Display for Object {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ObjectRef(pub usize);
+
+pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
+    let lexer = Lexer::new(source);
+    let result = lexer.collect::<Result<Vec<Token>, LexError>>()?;
+
+    Ok(result)
+}
+
+pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
+    let mut result: Vec<Expr> = Vec::new();
+
+    let lexer = Lexer::new(source);
+    let mut parser = Parser::new(lexer, source.len());
+
+    while let Some(expr) = parser.parse_expr()? {
+        result.push(expr);
+    }
+
+    Ok(result)
+}

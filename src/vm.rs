@@ -2,136 +2,6 @@ use std::rc::Rc;
 
 use crate::{common::*, compiler::*, diagnostics::*};
 
-pub struct HeapObject {
-    marked: bool,
-    pub object: Object,
-}
-impl HeapObject {
-    fn new(object: Object) -> Self {
-        Self {
-            marked: false,
-            object,
-        }
-    }
-}
-
-pub struct Heap {
-    pub objects: Vec<Option<HeapObject>>,
-    allocated: usize,
-    next_gc: usize,
-}
-
-impl Heap {
-    pub fn new() -> Self {
-        Self {
-            objects: Vec::new(),
-            allocated: 0,
-            next_gc: 128,
-        }
-    }
-
-    pub fn should_collect(&self) -> bool {
-        self.allocated >= self.next_gc
-    }
-
-    pub fn allocate(&mut self, value: Object) -> ObjectRef {
-        for (i, obj) in self.objects.iter_mut().enumerate() {
-            if obj.is_none() {
-                obj.replace(HeapObject::new(value));
-                return ObjectRef(i);
-            }
-        }
-
-        let index = self.objects.len();
-        self.objects.push(Some(HeapObject::new(value)));
-        self.allocated += 1;
-        ObjectRef(index)
-    }
-
-    pub fn get(&self, obj_ref: ObjectRef) -> Option<&Object> {
-        self.objects[obj_ref.0]
-            .as_ref()
-            .map(|heap_object| &heap_object.object)
-    }
-    pub fn get_mut(&mut self, obj_ref: ObjectRef) -> Option<&mut Object> {
-        self.objects[obj_ref.0]
-            .as_mut()
-            .map(|heap_object| &mut heap_object.object)
-    }
-
-    pub fn take(&mut self, obj_ref: ObjectRef) -> Option<Object> {
-        self.objects[obj_ref.0]
-            .take()
-            .map(|heap_object| heap_object.object)
-    }
-    pub fn replace(&mut self, obj_ref: ObjectRef, value: Object) -> Option<Object> {
-        self.objects[obj_ref.0]
-            .replace(HeapObject::new(value))
-            .map(|heap_object| heap_object.object)
-    }
-
-    pub fn sweep(&mut self) {
-        let mut live = 0;
-        for obj in &mut self.objects {
-            if let Some(o) = obj {
-                if !o.marked {
-                    // println!("sweeped {}", o.object);
-                    obj.take();
-                } else {
-                    live += 1;
-                    o.marked = false;
-                }
-            }
-        }
-        self.allocated = live;
-        self.next_gc = (live * 2).max(128);
-    }
-
-    pub fn trace(&mut self, obj_ref: ObjectRef) {
-        let obj = self.get(obj_ref).unwrap();
-        match obj {
-            Object::String(_) => (),
-            Object::Closure(closure) => {
-                for obj_ref in closure.captures_ref.clone() {
-                    self.mark(obj_ref);
-                }
-            }
-            Object::Pair(Pair { car, cdr }) => {
-                let car = car.clone();
-                let cdr = cdr.clone();
-                self.mark_value(&car);
-                self.mark_value(&cdr);
-            }
-            Object::Capture(Capture::Closed(capture)) => {
-                if let Value::Obj(capture_ref) = capture {
-                    self.mark(*capture_ref);
-                }
-            }
-            Object::Capture(_) => (),
-        }
-    }
-
-    pub fn is_marked(&self, obj_ref: ObjectRef) -> bool {
-        self.objects[obj_ref.0].as_ref().unwrap().marked
-    }
-    pub fn set_marked(&mut self, obj_ref: ObjectRef, value: bool) {
-        self.objects[obj_ref.0].as_mut().unwrap().marked = value;
-    }
-    pub fn mark(&mut self, obj_ref: ObjectRef) {
-        if self.is_marked(obj_ref) {
-            return;
-        }
-
-        self.set_marked(obj_ref, true);
-        self.trace(obj_ref);
-    }
-    pub fn mark_value(&mut self, value: &Value) {
-        if let Value::Obj(obj_ref) = value {
-            self.mark(*obj_ref);
-        };
-    }
-}
-
 struct CallFrame {
     closure_ref: ObjectRef,
     ip: usize,
@@ -139,19 +9,21 @@ struct CallFrame {
 }
 
 pub struct Vm<'ctx> {
+    pub ctx: &'ctx mut Lisp,
     stack: Vec<Value>,
-    pub ctx: &'ctx mut Context,
     frames: Vec<CallFrame>,
     open_captures_ref: Vec<ObjectRef>,
+    temp_roots: Vec<ObjectRef>,
 }
 
 impl<'ctx> Vm<'ctx> {
-    pub fn new(ctx: &'ctx mut Context) -> Vm<'ctx> {
+    pub fn new(ctx: &'ctx mut Lisp) -> Vm<'ctx> {
         Vm {
             stack: Vec::new(),
             ctx,
             frames: Vec::new(),
             open_captures_ref: Vec::new(),
+            temp_roots: Vec::new(),
         }
     }
 
@@ -212,7 +84,7 @@ impl<'ctx> Vm<'ctx> {
             self.ctx.heap.mark_value(global.1);
         }
         // mark temporary roots
-        for temp in &self.ctx.temp_roots {
+        for temp in &self.temp_roots {
             self.ctx.heap.mark(*temp);
         }
         self.ctx.heap.sweep();
@@ -227,16 +99,16 @@ impl<'ctx> Vm<'ctx> {
 
     pub fn protect(&mut self, value: &Value) {
         match value {
-            Value::Obj(obj_ref) => self.ctx.temp_roots.push(*obj_ref),
+            Value::Obj(obj_ref) => self.temp_roots.push(*obj_ref),
             _ => (),
         }
     }
     pub fn unprotect(&mut self) {
-        self.ctx.temp_roots.pop();
+        self.temp_roots.pop();
     }
     pub fn unprotect_many(&mut self, many: usize) {
-        let len = self.ctx.temp_roots.len();
-        self.ctx.temp_roots.truncate(len - many);
+        let len = self.temp_roots.len();
+        self.temp_roots.truncate(len - many);
     }
 
     fn constant_to_value(&mut self, constant: Constant) -> Value {

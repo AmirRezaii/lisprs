@@ -1,4 +1,4 @@
-use crate::{common::*, diagnostics::*, runtime::Vm};
+use crate::{common::*, diagnostics::*, vm::Vm};
 
 pub fn add(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 0.0;

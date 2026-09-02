@@ -1,9 +1,8 @@
 use std::{fs, path::Path};
 
 use lisprs::{
-    common::{Context, Value},
+    common::{Lisp, Value},
     diagnostics::*,
-    execute_module,
 };
 
 fn run_file(name: &str) -> Result<Value, Error> {
@@ -14,9 +13,10 @@ fn run_file(name: &str) -> Result<Value, Error> {
 
     let source = fs::read_to_string(path).expect("failed to read Lisp test file");
 
-    let mut ctx = Context::stdlib();
+    let mut lisp = Lisp::new();
+    lisp.stdlib();
 
-    execute_module(&source, &mut ctx)
+    lisp.execute(&source)
 }
 
 fn assert_number(value: Value, expected: f64) {

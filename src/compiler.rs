@@ -1,17 +1,61 @@
 use std::{collections::HashMap, fmt::Display, rc::Rc};
 
-use crate::{common::*, diagnostics::*, parser::*};
+use crate::{
+    common::{SymbolId, SymbolTable},
+    diagnostics::*,
+    parser::*,
+};
 
-// impl From<ExprKind> for Value {
-//     fn from(value: ExprKind) -> Self {
-//         match value {
-//             ExprKind::Number(number) => Value::Number(number),
-//             ExprKind::String(string) => Value::String(string),
-//             ExprKind::Symbol(symbol) => Value::Symbol(symbol),
-//             ExprKind::List(_) => todo!(),
-//         }
-//     }
-// }
+pub type ConstId = usize;
+pub type FunctionId = usize;
+pub type StackIndex = usize;
+pub type CaptureIndex = usize;
+
+#[derive(Debug)]
+pub struct CompiledUnit {
+    pub functions: Vec<FunctionProto>,
+    pub constants: Vec<Constant>,
+}
+
+impl CompiledUnit {
+    pub fn new() -> Self {
+        Self {
+            functions: Vec::new(),
+            constants: Vec::new(),
+        }
+    }
+
+    pub fn add_func(&mut self, arity: usize) -> FunctionId {
+        let func_id = self.functions.len();
+        self.functions.push(FunctionProto::new(arity));
+        func_id
+    }
+
+    pub fn add_const(&mut self, constant: Constant) -> ConstId {
+        let id = self.constants.len();
+        self.constants.push(constant);
+        id
+    }
+}
+
+impl Display for CompiledUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        writeln!(f, "constants:")?;
+        for (idx, c) in self.constants.iter().enumerate() {
+            writeln!(f, "  {idx}: {c}")?;
+        }
+
+        for func in &self.functions {
+            writeln!(f, "func(arity: {}):", func.arity)?;
+            for c in &func.chunk.code {
+                write!(f, "  ")?;
+                writeln!(f, "{c}")?;
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PairConst {
@@ -141,16 +185,15 @@ impl FunctionCompiler {
 
 pub struct Compiler<'a> {
     unit: &'a mut CompiledUnit,
-    ctx: &'a mut Context,
-
+    symbols: &'a mut SymbolTable,
     functions: Vec<FunctionCompiler>,
 }
 
 impl<'a> Compiler<'a> {
-    fn new(unit: &'a mut CompiledUnit, ctx: &'a mut Context) -> Self {
+    fn new(unit: &'a mut CompiledUnit, symbols: &'a mut SymbolTable) -> Self {
         Self {
             unit: unit,
-            ctx,
+            symbols,
             functions: Vec::new(),
         }
     }
@@ -189,7 +232,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn add_local(&mut self, name: &str) -> Slot {
-        let name = self.ctx.symbols.intern(name);
+        let name = self.symbols.intern(name);
 
         let slot = self.current().locals.len();
         let depth = self.current().scope_depth;
@@ -342,7 +385,7 @@ impl<'a> Compiler<'a> {
         self.compile_expr(value)?;
 
         let symbol = name.into_symbol()?;
-        let symbol = self.ctx.symbols.intern(symbol);
+        let symbol = self.symbols.intern(symbol);
 
         if let Some(slot) = self.resolve_local(symbol) {
             self.emit(Instr::SetLocal(slot), span);
@@ -445,7 +488,7 @@ impl<'a> Compiler<'a> {
     fn compile_quoted_dattum(&mut self, arg: &Expr) -> Result<Constant, CompileError> {
         match &arg.kind {
             ExprKind::Symbol(symbol) => {
-                let id = self.ctx.symbols.intern(&symbol);
+                let id = self.symbols.intern(&symbol);
                 Ok(Constant::Symbol(id))
             }
             ExprKind::String(string) => Ok(Constant::String(string.clone())),
@@ -484,7 +527,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn load_variable(&mut self, symbol: &str, span: Span) {
-        let symbol_id = self.ctx.symbols.intern(symbol);
+        let symbol_id = self.symbols.intern(symbol);
         if let Some(local) = self.resolve_local(symbol_id) {
             self.emit(Instr::LoadLocal(local), span);
         } else if let Some(capture_id) = self.resolve_capture(symbol_id) {
@@ -494,7 +537,7 @@ impl<'a> Compiler<'a> {
         }
     }
     fn set_variable(&mut self, symbol: &str, span: Span) {
-        let symbol = self.ctx.symbols.intern(symbol);
+        let symbol = self.symbols.intern(symbol);
 
         if let Some(slot) = self.resolve_local(symbol) {
             self.emit(Instr::SetLocal(slot), span);
@@ -603,12 +646,12 @@ impl<'a> Compiler<'a> {
 
     pub fn compile(
         module: &[Expr],
-        ctx: &'a mut Context,
+        symbols: &'a mut SymbolTable,
     ) -> Result<Rc<CompiledUnit>, CompileError> {
         let mut result = CompiledUnit::new();
         result.functions.push(FunctionProto::new(0));
 
-        let mut compiler = Compiler::new(&mut result, ctx);
+        let mut compiler = Compiler::new(&mut result, symbols);
         compiler.functions.push(FunctionCompiler::new(0));
 
         let len = module.len();

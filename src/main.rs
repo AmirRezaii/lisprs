@@ -3,9 +3,9 @@ use std::{
     io::{Write, stdin, stdout},
 };
 
-use lisprs::{common::Context, execute_module};
+use lisprs::common::Lisp;
 
-fn repl(mut context: Context) {
+fn repl(lisp: &mut Lisp) {
     let mut src = String::new();
     print!("> ");
     stdout().flush().unwrap();
@@ -14,12 +14,12 @@ fn repl(mut context: Context) {
             break;
         }
 
-        match execute_module(&src, &mut context) {
+        match lisp.execute(&src) {
             Err(err) => {
                 eprintln!("ERROR: {err}");
                 err.span.show(&src);
             }
-            Ok(value) => println!("result: {}", context.format_value(&value)),
+            Ok(value) => println!("result: {}", lisp.format_value(&value)),
         }
         src.clear();
         print!("> ");
@@ -27,24 +27,25 @@ fn repl(mut context: Context) {
     }
 }
 
-fn file(mut context: Context, path: &str) {
+fn file(lisp: &mut Lisp, path: &str) {
     let src = read_to_string(path).unwrap();
 
-    match execute_module(&src, &mut context) {
+    match lisp.execute(&src) {
         Err(err) => {
             eprintln!("ERROR: {err}");
             err.span.show(&src);
         }
-        Ok(value) => println!("result: {}", context.format_value(&value)),
+        Ok(value) => println!("result: {}", lisp.format_value(&value)),
     }
 }
 
 fn main() {
-    let context = Context::stdlib();
+    let mut lisp = Lisp::new();
+    lisp.stdlib();
 
     if false {
-        repl(context);
+        repl(&mut lisp);
     } else {
-        file(context, "test.el");
+        file(&mut lisp, "test.el");
     }
 }
