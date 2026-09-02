@@ -87,6 +87,21 @@ fn capture_shadowing() {
 }
 
 #[test]
+fn make_garbage() {
+    assert_number(run_file("make_garbage.el").unwrap(), 42.0);
+}
+
+#[test]
+fn gc_equal() {
+    assert_number(run_file("gc_equal.el").unwrap(), 1.0);
+}
+
+#[test]
+fn gc_capture() {
+    assert_number(run_file("gc_capture.el").unwrap(), 43.0);
+}
+
+#[test]
 fn undefined_variable_is_runtime_error() {
     let err = run_file("errors.el").unwrap_err();
 

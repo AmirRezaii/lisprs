@@ -3,12 +3,6 @@
     (lambda ()
       x)))
 
-(gc)
-(heap)
 (let ((f (make-getter)))
   (gc)
-  (heap)
   (f))
-
-(gc)
-(heap)

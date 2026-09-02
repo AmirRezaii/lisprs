@@ -12,7 +12,7 @@ mod compiler;
 pub mod diagnostics;
 mod lexer;
 mod parser;
-mod runtime;
+pub mod runtime;
 pub mod stdlib;
 
 pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
@@ -39,7 +39,7 @@ pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
 pub fn execute_module(source_code: &str, ctx: &mut Context) -> Result<Value, Error> {
     let mut vm = Vm::new(ctx);
     let ast = parse_module(source_code)?;
-    let module = Compiler::compile(&ast, vm.ctx)?;
-    let result = vm.run(module)?;
+    let unit = Compiler::compile(&ast, vm.ctx)?;
+    let result = vm.run(unit)?;
     Ok(result)
 }

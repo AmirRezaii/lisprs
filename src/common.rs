@@ -3,7 +3,7 @@ use std::{any::type_name_of_val, collections::HashMap, fmt::Display, rc::Rc};
 use crate::{
     compiler::{Constant, FunctionProto},
     diagnostics::*,
-    runtime::Heap,
+    runtime::{Heap, Vm},
     stdlib,
 };
 
@@ -49,6 +49,7 @@ pub struct Context {
     pub symbols: SymbolTable,
     pub globals: Globals,
     pub heap: Heap,
+    pub temp_roots: Vec<ObjectRef>,
 }
 
 impl Context {
@@ -57,6 +58,7 @@ impl Context {
             symbols: SymbolTable::new(),
             globals: Globals::new(),
             heap: Heap::new(),
+            temp_roots: Vec::new(),
         }
     }
     pub fn stdlib() -> Self {
@@ -65,12 +67,15 @@ impl Context {
         ctx.define_native("+", stdlib::add);
         ctx.define_native("*", stdlib::multiply);
         ctx.define_native("-", stdlib::subtract);
-        ctx.define_native("=", stdlib::equals);
+        ctx.define_native("eq", stdlib::eq);
+        ctx.define_native("equal", stdlib::equal);
         ctx.define_native("print", stdlib::print);
         ctx.define_native("cons", stdlib::cons);
         ctx.define_native("list", stdlib::list);
         ctx.define_native("car", stdlib::car);
         ctx.define_native("cdr", stdlib::cdr);
+        ctx.define_native("gc", stdlib::gc);
+        ctx.define_native("heap", stdlib::heap);
 
         ctx
     }
@@ -113,25 +118,25 @@ impl Context {
         result
     }
 
-    pub fn constant_to_value(&mut self, constant: Constant) -> Value {
-        match constant {
-            Constant::Symbol(symbol) => {
-                let symbol = self.symbols.resolve(symbol);
-                Value::Symbol(symbol.to_string())
+    pub fn format_heap(&self) -> String {
+        let mut result = String::new();
+        result.push_str("heap = [");
+
+        for (i, obj) in self
+            .heap
+            .objects
+            .iter()
+            .filter(|heap_object| heap_object.is_some())
+            .enumerate()
+        {
+            if i > 0 {
+                result.push_str(", ");
             }
-            Constant::String(string) => {
-                let obj_ref = self.heap.allocate(Object::String(string));
-                Value::Obj(obj_ref)
-            }
-            Constant::Number(number) => Value::Number(number),
-            Constant::Pair(pair) => {
-                let car = self.constant_to_value(*pair.car);
-                let cdr = self.constant_to_value(*pair.cdr);
-                let obj_ref = self.heap.allocate(Object::Pair(Pair { car, cdr }));
-                Value::Obj(obj_ref)
-            }
-            Constant::Nil => Value::Nil,
+            result.push_str(&self.format_object(&obj.as_ref().unwrap().object));
         }
+
+        result.push_str("]");
+        result
     }
 }
 
@@ -181,7 +186,7 @@ impl Display for CompiledUnit {
     }
 }
 
-pub type NativeFn = fn(&mut Context, &[Value], Span) -> Result<Value, RuntimeError>;
+pub type NativeFn = fn(&mut Vm, &[Value], Span) -> Result<Value, RuntimeError>;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -244,14 +249,14 @@ impl Display for Value {
 pub struct Closure {
     pub unit: Rc<CompiledUnit>,
     pub function: FunctionId,
-    pub captures: Vec<ObjectRef>,
+    pub captures_ref: Vec<ObjectRef>,
 }
 impl Closure {
     pub fn new(unit: Rc<CompiledUnit>, function: FunctionId) -> Self {
         Self {
             unit,
             function,
-            captures: Vec::new(),
+            captures_ref: Vec::new(),
         }
     }
 }
@@ -268,11 +273,30 @@ pub struct Pair {
     pub cdr: Value,
 }
 
+#[derive(Debug, Clone)]
 pub enum Object {
     String(String),
     Pair(Pair),
     Closure(Closure),
     Capture(Capture),
+}
+impl Object {
+    pub fn trace(&self, heap: &mut Heap) {
+        match self {
+            Object::String(_) => (),
+            Object::Closure(closure) => {
+                for obj_ref in &closure.captures_ref {
+                    heap.mark(*obj_ref);
+                }
+            }
+            Object::Pair(Pair { car, cdr }) => {
+                heap.mark_value(car);
+                heap.mark_value(cdr);
+            }
+            Object::Capture(Capture::Closed(capture)) => heap.mark_value(capture),
+            Object::Capture(_) => (),
+        }
+    }
 }
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

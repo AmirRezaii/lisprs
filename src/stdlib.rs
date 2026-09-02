@@ -1,6 +1,6 @@
-use crate::{common::*, diagnostics::*};
+use crate::{common::*, diagnostics::*, runtime::Vm};
 
-pub fn add(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn add(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 0.0;
 
     for arg in args {
@@ -18,7 +18,7 @@ pub fn add(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
     Ok(Value::Number(result))
 }
 
-pub fn multiply(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn multiply(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 1.0;
 
     for arg in args {
@@ -36,7 +36,7 @@ pub fn multiply(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value,
     Ok(Value::Number(result))
 }
 
-pub fn subtract(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn subtract(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.is_empty() {
         return Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(0, 1),
@@ -71,24 +71,74 @@ pub fn subtract(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value,
     Ok(Value::Number(result))
 }
 
-pub fn equals(_ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    if args.len() != 2 {
-        return Err(RuntimeError::new(
-            RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
-            span,
-        ));
-    }
-
-    match (&args[0], &args[1]) {
-        (Value::Number(a), Value::Number(b)) => Ok(Value::Number(if a == b { 1.0 } else { 0.0 })),
-        _ => Ok(Value::Number(0.0)),
+fn _equals_identity(vm: &mut Vm, args: (&Value, &Value)) -> bool {
+    match args {
+        (Value::Obj(a), Value::Obj(b)) => a.0 == b.0,
+        _ => _equals_literal(vm, args),
     }
 }
 
-pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+fn _equals_literal(vm: &mut Vm, args: (&Value, &Value)) -> bool {
+    match args {
+        (Value::Number(a), Value::Number(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::NativeFunction(a), Value::NativeFunction(b)) => std::ptr::fn_addr_eq(*a, *b),
+        (Value::Nil, Value::Nil) => true,
+        (Value::Obj(a), Value::Obj(b)) => {
+            let a = vm.ctx.heap.get(*a).unwrap().clone();
+            let b = vm.ctx.heap.get(*b).unwrap().clone();
+            match (a, b) {
+                (Object::String(a), Object::String(b)) => a == b,
+                (
+                    Object::Pair(Pair {
+                        car: a_car,
+                        cdr: a_cdr,
+                    }),
+                    Object::Pair(Pair {
+                        car: b_car,
+                        cdr: b_cdr,
+                    }),
+                ) => _equals_literal(vm, (&a_car, &b_car)) && _equals_literal(vm, (&a_cdr, &b_cdr)),
+                _ => _equals_identity(vm, args),
+            }
+        }
+        _ => false,
+    }
+}
+
+pub fn eq(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
+            span,
+        ))
+    } else {
+        if _equals_identity(vm, (&args[0], &args[1])) {
+            Ok(Value::Number(1.))
+        } else {
+            Ok(Value::Number(0.))
+        }
+    }
+}
+pub fn equal(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
+            span,
+        ))
+    } else {
+        if _equals_literal(vm, (&args[0], &args[1])) {
+            Ok(Value::Number(1.))
+        } else {
+            Ok(Value::Number(0.))
+        }
+    }
+}
+
+pub fn print(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() > 0 {
         for arg in args {
-            print!("{} ", ctx.format_value(arg));
+            print!("{} ", vm.ctx.format_value(arg));
         }
         print!("\n");
         Ok(args.last().unwrap().clone())
@@ -100,7 +150,7 @@ pub fn print(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Run
     }
 }
 
-pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn cons(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(args.len(), 2),
@@ -112,13 +162,13 @@ pub fn cons(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
             cdr: args[1].clone(),
         };
 
-        let obj = ctx.heap.allocate(Object::Pair(pair));
+        let obj = vm.allocate_gc(Object::Pair(pair));
 
         Ok(Value::Obj(obj))
     }
 }
 
-pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn list(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
@@ -132,7 +182,7 @@ pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
                 car: val.clone(),
                 cdr: cur,
             };
-            let pair_ref = ctx.heap.allocate(Object::Pair(pair));
+            let pair_ref = vm.allocate_gc(Object::Pair(pair));
             cur = Value::Obj(pair_ref);
         }
 
@@ -140,7 +190,7 @@ pub fn list(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runt
     }
 }
 
-pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn car(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
@@ -149,7 +199,7 @@ pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runti
     } else {
         match &args[0] {
             Value::Obj(obj_ref) => {
-                let obj = ctx.heap.get(*obj_ref).unwrap();
+                let obj = vm.ctx.heap.get(*obj_ref).unwrap();
                 match obj {
                     Object::Pair(Pair { car, cdr: _ }) => Ok(car.clone()),
                     other => Err(RuntimeError::new(
@@ -165,7 +215,7 @@ pub fn car(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runti
         }
     }
 }
-pub fn cdr(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn cdr(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(args.len(), 1),
@@ -174,7 +224,7 @@ pub fn cdr(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runti
     } else {
         match &args[0] {
             Value::Obj(obj_ref) => {
-                let obj = ctx.heap.get(*obj_ref).unwrap();
+                let obj = vm.ctx.heap.get(*obj_ref).unwrap();
                 match obj {
                     Object::Pair(Pair { car: _, cdr }) => Ok(cdr.clone()),
                     other => Err(RuntimeError::new(
@@ -189,4 +239,14 @@ pub fn cdr(ctx: &mut Context, args: &[Value], span: Span) -> Result<Value, Runti
             )),
         }
     }
+}
+
+// Tests
+pub fn gc(vm: &mut Vm, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
+    vm.collect_garbage();
+    Ok(Value::Nil)
+}
+pub fn heap(vm: &mut Vm, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
+    println!("{}", vm.ctx.format_heap());
+    Ok(Value::Nil)
 }
