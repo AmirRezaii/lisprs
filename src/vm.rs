@@ -207,11 +207,12 @@ impl<'ctx> Vm<'ctx> {
     }
 
     pub fn run_closure(&mut self, f: Value, args: &[Value]) -> Result<Value, RuntimeError> {
+        let calle_frame = self.frames.len();
         if let Value::Obj(closure_ref) = f {
             self.frames.push(CallFrame {
                 closure_ref,
                 ip: 0,
-                base: 0,
+                base: self.stack.len(),
             });
         } else {
             unreachable!()
@@ -220,8 +221,7 @@ impl<'ctx> Vm<'ctx> {
         self.stack.append(&mut args.to_vec());
 
         loop {
-            if self.frames.is_empty() {
-                assert!(self.stack.len() == 1);
+            if self.frames.len() <= calle_frame {
                 return Ok(self.stack.pop().unwrap());
             }
 
