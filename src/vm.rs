@@ -57,7 +57,7 @@ impl<'ctx> Vm<'ctx> {
             if stack_id >= base {
                 self.ctx.heap.replace(
                     capture_ref,
-                    Object::Capture(Capture::Closed(self.stack[stack_id].clone())),
+                    Object::Capture(Capture::Closed(self.stack[stack_id])),
                 );
                 self.open_captures_ref.swap_remove(i);
                 continue;
@@ -113,10 +113,7 @@ impl<'ctx> Vm<'ctx> {
 
     fn constant_to_value(&mut self, constant: Constant) -> Value {
         match constant {
-            Constant::Symbol(symbol) => {
-                let symbol = self.ctx.symbols.resolve(symbol);
-                Value::Symbol(symbol.to_string())
-            }
+            Constant::Symbol(symbol) => Value::Symbol(symbol),
             Constant::String(string) => {
                 let obj_ref = self.allocate_gc(Object::String(string));
                 Value::Obj(obj_ref)
@@ -206,10 +203,10 @@ impl<'ctx> Vm<'ctx> {
         assert!(unit.functions.len() > 0);
         // entry call frame
         let closure_ref = self.allocate_gc(Object::Closure(Closure::new(Rc::clone(&unit), 0)));
-        self.run_closure(Value::Obj(closure_ref))
+        self.run_closure(Value::Obj(closure_ref), &[])
     }
 
-    pub fn run_closure(&mut self, f: Value) -> Result<Value, RuntimeError> {
+    pub fn run_closure(&mut self, f: Value, args: &[Value]) -> Result<Value, RuntimeError> {
         if let Value::Obj(closure_ref) = f {
             self.frames.push(CallFrame {
                 closure_ref,
@@ -219,6 +216,8 @@ impl<'ctx> Vm<'ctx> {
         } else {
             unreachable!()
         }
+
+        self.stack.append(&mut args.to_vec());
 
         loop {
             if self.frames.is_empty() {
@@ -238,8 +237,8 @@ impl<'ctx> Vm<'ctx> {
                 let unit = Rc::clone(&closure.unit);
 
                 let body = &unit.functions[closure.function].chunk;
-                let instr = body.code[frame.ip].clone();
-                let span = body.spans.get(&frame.ip).cloned().unwrap();
+                let instr = body.code[frame.ip];
+                let span = *body.spans.get(&frame.ip).unwrap();
 
                 frame.ip += 1;
 
@@ -261,7 +260,7 @@ impl<'ctx> Vm<'ctx> {
                 }
                 Instr::LoadGlobal(symbol_id) => {
                     if let Some(global) = self.ctx.globals.get(&symbol_id) {
-                        self.stack.push(global.clone());
+                        self.stack.push(*global);
                     } else {
                         return Err(RuntimeError::new(RuntimeErrorKind::UndefinedVariable, span));
                     }
@@ -269,10 +268,10 @@ impl<'ctx> Vm<'ctx> {
                 Instr::SetGlobal(symbol) => {
                     self.ctx.globals.insert(
                         symbol,
-                        self.stack
+                        *self
+                            .stack
                             .last()
-                            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
-                            .clone(),
+                            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?,
                     );
                 }
                 Instr::LoadCapture(capture_id) => {
@@ -280,21 +279,18 @@ impl<'ctx> Vm<'ctx> {
                     let capture = self.ctx.heap.get(capture_ref).unwrap();
                     if let Object::Capture(capture) = capture {
                         match capture {
-                            Capture::Open(stack_id) => {
-                                self.stack.push(self.stack[*stack_id].clone())
-                            }
-                            Capture::Closed(captured) => self.stack.push(captured.clone()),
+                            Capture::Open(stack_id) => self.stack.push(self.stack[*stack_id]),
+                            Capture::Closed(captured) => self.stack.push(*captured),
                         }
                     } else {
                         unreachable!();
                     }
                 }
                 Instr::SetCapture(capture_id) => {
-                    let value = self
+                    let value = *self
                         .stack
                         .last()
-                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
-                        .clone();
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
 
                     let capture_ref = closure.captures_ref[capture_id];
                     if let Object::Capture(capture) = self.ctx.heap.get(capture_ref).unwrap() {
@@ -314,17 +310,16 @@ impl<'ctx> Vm<'ctx> {
                     let idx = base + slot;
 
                     if let Some(local) = self.stack.get(idx) {
-                        self.stack.push(local.clone());
+                        self.stack.push(*local);
                     } else {
                         return Err(RuntimeError::new(RuntimeErrorKind::UndefinedVariable, span));
                     }
                 }
                 Instr::SetLocal(slot) => {
-                    let value = self
+                    let value = *self
                         .stack
                         .last()
-                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
-                        .clone();
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
 
                     self.stack[base + slot] = value;
                 }

@@ -68,6 +68,8 @@ impl Lisp {
         self.define_native_fn("equal", stdlib::equal);
         self.define_native_fn("eq", stdlib::eq);
         self.define_native_fn("print", stdlib::print);
+        self.define_native_fn("null", stdlib::null);
+        self.define_native_fn("length", stdlib::length);
         self.define_native_fn("apply", stdlib::apply);
         self.define_native_fn("cons", stdlib::cons);
         self.define_native_fn("list", stdlib::list);
@@ -101,6 +103,7 @@ impl Lisp {
                     .expect("object reference to heap empty");
                 result = String::from(format!("{}", self.format_object(obj)));
             }
+            Value::Symbol(symbol_id) => result = String::from(self.symbols.resolve(*symbol_id)),
             other => result = String::from(format!("{other}")),
         }
 
@@ -147,9 +150,9 @@ impl Lisp {
 
 pub type NativeFn = fn(&mut Vm, &[Value], Span) -> Result<Value, RuntimeError>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
-    Symbol(String),
+    Symbol(SymbolId),
     Number(f64),
     Bool(bool),
     NativeFunction(NativeFn),
@@ -265,8 +268,8 @@ impl Heap {
                 }
             }
             Object::Pair(Pair { car, cdr }) => {
-                let car = car.clone();
-                let cdr = cdr.clone();
+                let car = *car;
+                let cdr = *cdr;
                 self.mark_value(&car);
                 self.mark_value(&cdr);
             }
@@ -349,7 +352,7 @@ impl Display for Object {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ObjectRef(pub usize);
+pub struct ObjectRef(usize);
 
 pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
     let lexer = Lexer::new(source);

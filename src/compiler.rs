@@ -86,7 +86,7 @@ impl Display for Constant {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Instr {
     PushNil,
     PushBool(bool),

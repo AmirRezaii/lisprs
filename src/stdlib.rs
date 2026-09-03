@@ -2,7 +2,7 @@ use crate::{common::*, diagnostics::*, vm::Vm};
 
 fn equals_identity_(vm: &mut Vm, args: (&Value, &Value)) -> bool {
     match args {
-        (Value::Obj(a), Value::Obj(b)) => a.0 == b.0,
+        (Value::Obj(a), Value::Obj(b)) => a == b,
         _ => equals_literal_(vm, args),
     }
 }
@@ -351,7 +351,7 @@ pub fn print(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
             print!("{}", vm.ctx.format_value(arg));
         }
         print!("\n");
-        Ok(args.last().unwrap().clone())
+        Ok(*args.last().unwrap())
     } else {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(0), ArgCount::Least(1)),
@@ -367,14 +367,14 @@ fn pair_to_list(vm: &mut Vm, value: &Value, span: Span) -> Result<Vec<Value>, Ru
         span,
     ));
 
-    let mut value = value.clone();
+    let mut value = *value;
     loop {
         match value {
             Value::Nil => break,
-            Value::Obj(obj_ref) => match vm.ctx.heap.get(obj_ref).unwrap().clone() {
+            Value::Obj(obj_ref) => match vm.ctx.heap.get(obj_ref).unwrap() {
                 Object::Pair(Pair { car, cdr }) => {
-                    result.push(car);
-                    value = cdr;
+                    result.push(*car);
+                    value = *cdr;
                 }
                 _ => return err,
             },
@@ -382,6 +382,47 @@ fn pair_to_list(vm: &mut Vm, value: &Value, span: Span) -> Result<Vec<Value>, Ru
         }
     }
     Ok(result)
+}
+
+pub fn null(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
+            span,
+        ))
+    } else {
+        Ok(Value::Bool(matches!(&args[0], Value::Nil)))
+    }
+}
+
+pub fn length(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
+            span,
+        ))
+    } else {
+        let err = Err(RuntimeError::new(
+            RuntimeErrorKind::TypeMismatch(args[0].to_string(), "list".to_string()),
+            span,
+        ));
+        let mut result = 0;
+        let mut value = args[0];
+        loop {
+            match value {
+                Value::Nil => break,
+                Value::Obj(obj_ref) => match vm.ctx.heap.get(obj_ref).unwrap() {
+                    Object::Pair(Pair { car: _, cdr }) => {
+                        result += 1;
+                        value = *cdr;
+                    }
+                    _ => return err,
+                },
+                _ => return err,
+            }
+        }
+        Ok(Value::Number(result.into()))
+    }
 }
 
 pub fn apply(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
@@ -394,7 +435,7 @@ pub fn apply(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
         let (f, args) = args.split_first().unwrap();
         let (list, args) = args.split_last().unwrap();
 
-        let mut args: Vec<Value> = args.iter().cloned().collect();
+        let mut args: Vec<Value> = args.to_vec();
         let mut list = pair_to_list(vm, list, span)?;
         args.append(&mut list);
 
@@ -402,8 +443,19 @@ pub fn apply(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
             Value::NativeFunction(f) => f(vm, args.as_slice(), span),
             Value::Obj(closure_ref) => {
                 let obj = vm.ctx.heap.get(*closure_ref).unwrap();
-                if matches!(obj, Object::Closure(_)) {
-                    vm.run_closure(f.clone())
+                if let Object::Closure(closure) = obj {
+                    let arity = closure.unit.functions[closure.function].arity;
+                    if arity != args.len() {
+                        Err(RuntimeError::new(
+                            RuntimeErrorKind::InvalidArgumentCount(
+                                ArgCount::Exact(args.len()),
+                                ArgCount::Exact(arity),
+                            ),
+                            span,
+                        ))
+                    } else {
+                        vm.run_closure(*f, &args)
+                    }
                 } else {
                     Err(RuntimeError::new(
                         RuntimeErrorKind::TypeMismatch(obj.to_string(), "closure".to_string()),
@@ -427,8 +479,8 @@ pub fn cons(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
         ))
     } else {
         let pair = Pair {
-            car: args[0].clone(),
-            cdr: args[1].clone(),
+            car: args[0],
+            cdr: args[1],
         };
 
         let obj = vm.allocate_gc(Object::Pair(pair));
@@ -448,7 +500,7 @@ pub fn list(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
 
         for val in args.iter().rev() {
             let pair = Pair {
-                car: val.clone(),
+                car: *val,
                 cdr: cur,
             };
             let pair_ref = vm.allocate_gc(Object::Pair(pair));
@@ -470,7 +522,7 @@ pub fn car(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
             Value::Obj(obj_ref) => {
                 let obj = vm.ctx.heap.get(*obj_ref).unwrap();
                 match obj {
-                    Object::Pair(Pair { car, cdr: _ }) => Ok(car.clone()),
+                    Object::Pair(Pair { car, cdr: _ }) => Ok(*car),
                     other => Err(RuntimeError::new(
                         RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
                         span,
@@ -495,7 +547,7 @@ pub fn cdr(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
             Value::Obj(obj_ref) => {
                 let obj = vm.ctx.heap.get(*obj_ref).unwrap();
                 match obj {
-                    Object::Pair(Pair { car: _, cdr }) => Ok(cdr.clone()),
+                    Object::Pair(Pair { car: _, cdr }) => Ok(*cdr),
                     other => Err(RuntimeError::new(
                         RuntimeErrorKind::TypeMismatch(other.to_string(), "pair".to_string()),
                         span,
