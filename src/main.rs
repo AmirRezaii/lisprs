@@ -19,7 +19,7 @@ fn repl(lisp: &mut Lisp) {
                 eprintln!("ERROR: {err}");
                 err.span.show(&src);
             }
-            Ok(value) => println!("result: {}", lisp.format_value(&value)),
+            Ok(value) => println!("result: {}", lisp.runtime.format_value(&value)),
         }
         src.clear();
         print!("> ");
@@ -35,13 +35,12 @@ fn file(lisp: &mut Lisp, path: &str) {
             eprintln!("ERROR: {err}");
             err.span.show(&src);
         }
-        Ok(value) => println!("result: {}", lisp.format_value(&value)),
+        Ok(value) => println!("result: {}", lisp.runtime.format_value(&value)),
     }
 }
 
 fn main() {
     let mut lisp = Lisp::new();
-    lisp.stdlib();
 
     if false {
         repl(&mut lisp);

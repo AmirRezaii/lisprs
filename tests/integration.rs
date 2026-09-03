@@ -1,9 +1,6 @@
 use std::{fs, path::Path};
 
-use lisprs::{
-    common::{Lisp, Value},
-    diagnostics::*,
-};
+use lisprs::{common::Lisp, diagnostics::*, runtime::Value};
 
 fn run_file(name: &str) -> Result<Value, Error> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -14,7 +11,6 @@ fn run_file(name: &str) -> Result<Value, Error> {
     let source = fs::read_to_string(path).expect("failed to read Lisp test file");
 
     let mut lisp = Lisp::new();
-    lisp.stdlib();
 
     lisp.execute(&source)
 }

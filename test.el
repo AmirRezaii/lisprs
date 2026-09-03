@@ -1,3 +1,2 @@
-(defun f (x y z p)
-  (* x y z p))
-(= 24 (apply f '(1 2 3 4)))
+(defun wow ((x))
+  (print x))

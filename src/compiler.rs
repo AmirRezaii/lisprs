@@ -1,9 +1,9 @@
 use std::{collections::HashMap, fmt::Display, rc::Rc};
 
 use crate::{
-    common::{SymbolId, SymbolTable},
     diagnostics::*,
     parser::*,
+    runtime::{SymbolId, SymbolTable},
 };
 
 pub type ConstId = usize;
@@ -768,6 +768,15 @@ impl<'a> Compiler<'a> {
                         self.compile_while(args, span)?;
                     }
                     "break" => {
+                        if args.len() > 0 {
+                            return Err(CompileError::new(
+                                CompileErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(args.len()),
+                                    ArgCount::Exact(0),
+                                ),
+                                span,
+                            ));
+                        }
                         let ip = self.emit(Instr::Jump(0), span);
                         self.current_mut()
                             .loop_stack
@@ -777,6 +786,15 @@ impl<'a> Compiler<'a> {
                             .push(ip);
                     }
                     "continue" => {
+                        if args.len() > 0 {
+                            return Err(CompileError::new(
+                                CompileErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(args.len()),
+                                    ArgCount::Exact(0),
+                                ),
+                                span,
+                            ));
+                        }
                         let ip = self
                             .current()
                             .loop_stack
@@ -870,7 +888,7 @@ impl<'a> Compiler<'a> {
 
         let len = module.len();
         if len == 0 {
-            let span = Span { start: 0, end: 0 };
+            let span = Span::new(0, 0);
             compiler.emit(Instr::PushNil, span);
             compiler.emit(Instr::Return, span);
         } else {
@@ -881,7 +899,7 @@ impl<'a> Compiler<'a> {
                     compiler.emit(Instr::Pop, arg.span);
                 }
             }
-            compiler.emit(Instr::Return, Span { start: 0, end: 0 });
+            compiler.emit(Instr::Return, Span::new(0, 0));
         }
         compiler.functions.pop();
 

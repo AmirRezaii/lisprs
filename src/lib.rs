@@ -3,5 +3,6 @@ pub mod compiler;
 pub mod diagnostics;
 pub mod lexer;
 pub mod parser;
+pub mod runtime;
 pub mod stdlib;
 pub mod vm;

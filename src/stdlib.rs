@@ -1,13 +1,17 @@
-use crate::{common::*, diagnostics::*, vm::Vm};
+use crate::{
+    common::*,
+    diagnostics::*,
+    runtime::{Object, Pair, Value},
+};
 
-fn equals_identity_(vm: &mut Vm, args: (&Value, &Value)) -> bool {
+fn equals_identity_(lisp: &mut Lisp, args: (&Value, &Value)) -> bool {
     match args {
         (Value::Obj(a), Value::Obj(b)) => a == b,
-        _ => equals_literal_(vm, args),
+        _ => equals_literal_(lisp, args),
     }
 }
 
-fn equals_literal_(vm: &mut Vm, args: (&Value, &Value)) -> bool {
+fn equals_literal_(lisp: &mut Lisp, args: (&Value, &Value)) -> bool {
     match args {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Number(a), Value::Number(b)) => a == b,
@@ -15,8 +19,8 @@ fn equals_literal_(vm: &mut Vm, args: (&Value, &Value)) -> bool {
         (Value::NativeFunction(a), Value::NativeFunction(b)) => std::ptr::fn_addr_eq(*a, *b),
         (Value::Nil, Value::Nil) => true,
         (Value::Obj(a), Value::Obj(b)) => {
-            let a = vm.ctx.heap.get(*a).unwrap().clone();
-            let b = vm.ctx.heap.get(*b).unwrap().clone();
+            let a = lisp.runtime.heap.get(*a).unwrap().clone();
+            let b = lisp.runtime.heap.get(*b).unwrap().clone();
             match (a, b) {
                 (Object::String(a), Object::String(b)) => a == b,
                 (
@@ -28,8 +32,11 @@ fn equals_literal_(vm: &mut Vm, args: (&Value, &Value)) -> bool {
                         car: b_car,
                         cdr: b_cdr,
                     }),
-                ) => equals_literal_(vm, (&a_car, &b_car)) && equals_literal_(vm, (&a_cdr, &b_cdr)),
-                _ => equals_identity_(vm, args),
+                ) => {
+                    equals_literal_(lisp, (&a_car, &b_car))
+                        && equals_literal_(lisp, (&a_cdr, &b_cdr))
+                }
+                _ => equals_identity_(lisp, args),
             }
         }
         _ => false,
@@ -77,24 +84,24 @@ fn equal_num_(args: &[f64]) -> bool {
     }
     return true;
 }
-fn equal_(vm: &mut Vm, args: &[Value]) -> bool {
+fn equal_(lisp: &mut Lisp, args: &[Value]) -> bool {
     for w in args.windows(2) {
-        if !equals_literal_(vm, (&w[0], &w[1])) {
+        if !equals_literal_(lisp, (&w[0], &w[1])) {
             return false;
         }
     }
     return true;
 }
-fn eq_(vm: &mut Vm, args: &[Value]) -> bool {
+fn eq_(lisp: &mut Lisp, args: &[Value]) -> bool {
     for w in args.windows(2) {
-        if !equals_identity_(vm, (&w[0], &w[1])) {
+        if !equals_identity_(lisp, (&w[0], &w[1])) {
             return false;
         }
     }
     return true;
 }
 
-pub fn add(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn add(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 0.0;
 
     for arg in args {
@@ -112,7 +119,7 @@ pub fn add(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
     Ok(Value::Number(result))
 }
 
-pub fn multiply(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn multiply(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let mut result = 1.0;
 
     for arg in args {
@@ -130,7 +137,7 @@ pub fn multiply(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, Runti
     Ok(Value::Number(result))
 }
 
-pub fn subtract(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn subtract(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.is_empty() {
         return Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(0), ArgCount::Exact(1)),
@@ -165,7 +172,7 @@ pub fn subtract(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, Runti
     Ok(Value::Number(result))
 }
 
-pub fn lt(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn lt(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -186,7 +193,7 @@ pub fn lt(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
         Ok(Value::Bool(lt_(args?.as_slice())))
     }
 }
-pub fn lte(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn lte(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -207,7 +214,7 @@ pub fn lte(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
         Ok(Value::Bool(lte_(args?.as_slice())))
     }
 }
-pub fn gt(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn gt(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -228,7 +235,7 @@ pub fn gt(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
         Ok(Value::Bool(gt_(args?.as_slice())))
     }
 }
-pub fn gte(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn gte(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -249,7 +256,7 @@ pub fn gte(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
         Ok(Value::Bool(gte_(args?.as_slice())))
     }
 }
-pub fn equal_num(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn equal_num(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -270,28 +277,28 @@ pub fn equal_num(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, Runt
         Ok(Value::Bool(equal_num_(args?.as_slice())))
     }
 }
-pub fn equal(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn equal(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
             span,
         ))
     } else {
-        Ok(Value::Bool(equal_(vm, args)))
+        Ok(Value::Bool(equal_(lisp, args)))
     }
 }
-pub fn eq(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn eq(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
             span,
         ))
     } else {
-        Ok(Value::Bool(eq_(vm, args)))
+        Ok(Value::Bool(eq_(lisp, args)))
     }
 }
 
-pub fn and(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn and(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -316,7 +323,7 @@ pub fn and(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
         Ok(Value::Bool(true))
     }
 }
-pub fn or(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn or(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -342,13 +349,13 @@ pub fn or(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
     }
 }
 
-pub fn print(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn print(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() > 0 {
         for (i, arg) in args.iter().enumerate() {
             if i > 0 {
                 print!(" ");
             }
-            print!("{}", vm.ctx.format_value(arg));
+            print!("{}", lisp.runtime.format_value(arg));
         }
         print!("\n");
         Ok(*args.last().unwrap())
@@ -360,7 +367,7 @@ pub fn print(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
     }
 }
 
-fn pair_to_list(vm: &mut Vm, value: &Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
+fn pair_to_list(vm: &mut Lisp, value: &Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
     let mut result: Vec<Value> = Vec::new();
     let err = Err(RuntimeError::new(
         RuntimeErrorKind::TypeMismatch(value.to_string(), "list".to_string()),
@@ -371,7 +378,7 @@ fn pair_to_list(vm: &mut Vm, value: &Value, span: Span) -> Result<Vec<Value>, Ru
     loop {
         match value {
             Value::Nil => break,
-            Value::Obj(obj_ref) => match vm.ctx.heap.get(obj_ref).unwrap() {
+            Value::Obj(obj_ref) => match vm.runtime.heap.get(obj_ref).unwrap() {
                 Object::Pair(Pair { car, cdr }) => {
                     result.push(*car);
                     value = *cdr;
@@ -384,7 +391,7 @@ fn pair_to_list(vm: &mut Vm, value: &Value, span: Span) -> Result<Vec<Value>, Ru
     Ok(result)
 }
 
-pub fn null(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn null(_lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
@@ -395,7 +402,7 @@ pub fn null(_vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
     }
 }
 
-pub fn length(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn length(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
@@ -411,7 +418,7 @@ pub fn length(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeE
         loop {
             match value {
                 Value::Nil => break,
-                Value::Obj(obj_ref) => match vm.ctx.heap.get(obj_ref).unwrap() {
+                Value::Obj(obj_ref) => match lisp.runtime.heap.get(obj_ref).unwrap() {
                     Object::Pair(Pair { car: _, cdr }) => {
                         result += 1;
                         value = *cdr;
@@ -425,7 +432,7 @@ pub fn length(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeE
     }
 }
 
-pub fn apply(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn apply(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2)),
@@ -436,42 +443,14 @@ pub fn apply(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeEr
         let (list, args) = args.split_last().unwrap();
 
         let mut args: Vec<Value> = args.to_vec();
-        let mut list = pair_to_list(vm, list, span)?;
+        let mut list = pair_to_list(lisp, list, span)?;
         args.append(&mut list);
 
-        match f {
-            Value::NativeFunction(f) => f(vm, args.as_slice(), span),
-            Value::Obj(closure_ref) => {
-                let obj = vm.ctx.heap.get(*closure_ref).unwrap();
-                if let Object::Closure(closure) = obj {
-                    let arity = closure.unit.functions[closure.function].arity;
-                    if arity != args.len() {
-                        Err(RuntimeError::new(
-                            RuntimeErrorKind::InvalidArgumentCount(
-                                ArgCount::Exact(args.len()),
-                                ArgCount::Exact(arity),
-                            ),
-                            span,
-                        ))
-                    } else {
-                        vm.run_closure(*f, &args)
-                    }
-                } else {
-                    Err(RuntimeError::new(
-                        RuntimeErrorKind::TypeMismatch(obj.to_string(), "closure".to_string()),
-                        span,
-                    ))
-                }
-            }
-            other => Err(RuntimeError::new(
-                RuntimeErrorKind::TypeMismatch(other.to_string(), "closure".to_string()),
-                span,
-            )),
-        }
+        lisp.call(*f, args.as_slice(), span)
     }
 }
 
-pub fn cons(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn cons(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(2)),
@@ -483,13 +462,13 @@ pub fn cons(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
             cdr: args[1],
         };
 
-        let obj = vm.allocate_gc(Object::Pair(pair));
+        let obj = lisp.runtime.heap.allocate(Object::Pair(pair));
 
         Ok(Value::Obj(obj))
     }
 }
 
-pub fn list(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn list(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() < 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(1)),
@@ -503,7 +482,7 @@ pub fn list(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
                 car: *val,
                 cdr: cur,
             };
-            let pair_ref = vm.allocate_gc(Object::Pair(pair));
+            let pair_ref = lisp.runtime.heap.allocate(Object::Pair(pair));
             cur = Value::Obj(pair_ref);
         }
 
@@ -511,7 +490,7 @@ pub fn list(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErr
     }
 }
 
-pub fn car(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn car(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
@@ -520,7 +499,7 @@ pub fn car(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
     } else {
         match &args[0] {
             Value::Obj(obj_ref) => {
-                let obj = vm.ctx.heap.get(*obj_ref).unwrap();
+                let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
                 match obj {
                     Object::Pair(Pair { car, cdr: _ }) => Ok(*car),
                     other => Err(RuntimeError::new(
@@ -536,7 +515,7 @@ pub fn car(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
         }
     }
 }
-pub fn cdr(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+pub fn cdr(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         Err(RuntimeError::new(
             RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1)),
@@ -545,7 +524,7 @@ pub fn cdr(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
     } else {
         match &args[0] {
             Value::Obj(obj_ref) => {
-                let obj = vm.ctx.heap.get(*obj_ref).unwrap();
+                let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
                 match obj {
                     Object::Pair(Pair { car: _, cdr }) => Ok(*cdr),
                     other => Err(RuntimeError::new(
@@ -563,11 +542,11 @@ pub fn cdr(vm: &mut Vm, args: &[Value], span: Span) -> Result<Value, RuntimeErro
 }
 
 // Tests
-pub fn gc(vm: &mut Vm, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
-    vm.collect_garbage();
+pub fn gc(lisp: &mut Lisp, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
+    lisp.runtime.heap.request_gc();
     Ok(Value::Nil)
 }
-pub fn heap(vm: &mut Vm, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
-    println!("{}", vm.ctx.format_heap());
+pub fn heap(lisp: &mut Lisp, _args: &[Value], _span: Span) -> Result<Value, RuntimeError> {
+    println!("{}", lisp.runtime.format_heap());
     Ok(Value::Nil)
 }

@@ -122,10 +122,7 @@ impl<'a> Lexer<'a> {
                     ch => {
                         return Err(LexError::new(
                             LexErrorKind::InvalidEscape(ch),
-                            Span {
-                                start: self.cur - 2,
-                                end: self.cur,
-                            },
+                            Span::new(self.cur - 2, self.cur),
                         ));
                     }
                 }
