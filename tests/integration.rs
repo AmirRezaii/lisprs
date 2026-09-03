@@ -31,6 +31,15 @@ fn assert_number(value: Value, expected: f64) {
     }
 }
 
+fn assert_bool(value: Value, expected: bool) {
+    match value {
+        Value::Bool(actual) => {
+            assert!(actual == expected, "expected {expected}, got {actual}");
+        }
+        other => panic!("expected number {expected}, got {other:?}"),
+    }
+}
+
 #[test]
 fn basic_expressions() {
     assert_number(run_file("basic.el").unwrap(), 42.0);
@@ -93,12 +102,32 @@ fn make_garbage() {
 
 #[test]
 fn gc_equal() {
-    assert_number(run_file("gc_equal.el").unwrap(), 1.0);
+    assert_bool(run_file("gc_equal.el").unwrap(), true);
 }
 
 #[test]
 fn gc_capture() {
     assert_number(run_file("gc_capture.el").unwrap(), 43.0);
+}
+
+#[test]
+fn if_condition() {
+    assert_number(run_file("if_condition.el").unwrap(), 23.0);
+}
+
+#[test]
+fn if_nested() {
+    assert_number(run_file("if_nested.el").unwrap(), 2.0);
+}
+
+#[test]
+fn factorial() {
+    assert_number(run_file("factorial.el").unwrap(), 120.0);
+}
+
+#[test]
+fn while_loop() {
+    assert_bool(run_file("while.el").unwrap(), true);
 }
 
 #[test]

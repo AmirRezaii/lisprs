@@ -86,6 +86,9 @@ impl Display for Error {
                 CompileErrorKind::UnquotedDottedList => {
                     write!(f, "dotted list is only valid as quoted data")
                 }
+                CompileErrorKind::LoopNotFound => {
+                    write!(f, "no loop found")
+                }
             },
             ErrorKind::Runtime(err) => match err {
                 RuntimeErrorKind::UndefinedVariable => {
@@ -160,12 +163,28 @@ impl From<LexError> for ParseError {
 }
 
 #[derive(Debug)]
+pub enum ArgCount {
+    Exact(usize),
+    Least(usize),
+    Between(usize, usize),
+}
+impl Display for ArgCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArgCount::Exact(n) => write!(f, "exactly {n}"),
+            ArgCount::Least(n) => write!(f, "at least {n}"),
+            ArgCount::Between(n, m) => write!(f, "between {n} and {m}"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum CompileErrorKind {
     InvalidArgument { given: String, expected: String },
-    // TODO: Right now we don't know if the argument is "at least" or "exact" or "range"
-    InvalidArgumentCount(usize, usize),
+    InvalidArgumentCount(ArgCount, ArgCount),
     UnexpectedCall(String),
     UnquotedDottedList,
+    LoopNotFound,
 }
 
 pub struct CompileError {
@@ -184,7 +203,7 @@ pub enum RuntimeErrorKind {
     UndefinedVariable,
     NotAFunction(String),
     TypeMismatch(String, String),
-    InvalidArgumentCount(usize, usize),
+    InvalidArgumentCount(ArgCount, ArgCount),
     StackUnderflow,
 }
 

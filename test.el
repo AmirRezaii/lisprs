@@ -1,14 +1,1 @@
-(defun make-getter ()
-  (let ((x 43))
-    (lambda ()
-      x)))
-
-(gc)
-(heap)
-(let ((f (make-getter)))
-  (gc)
-  (heap)
-  (f))
-
-(gc)
-(heap)
+(apply + 3 '(1 2 3))

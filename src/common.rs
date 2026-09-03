@@ -60,9 +60,15 @@ impl Lisp {
         self.define_native_fn("+", stdlib::add);
         self.define_native_fn("*", stdlib::multiply);
         self.define_native_fn("-", stdlib::subtract);
-        self.define_native_fn("eq", stdlib::eq);
+        self.define_native_fn("<", stdlib::lt);
+        self.define_native_fn("<=", stdlib::lte);
+        self.define_native_fn(">", stdlib::gt);
+        self.define_native_fn(">=", stdlib::gte);
+        self.define_native_fn("=", stdlib::equal_num);
         self.define_native_fn("equal", stdlib::equal);
+        self.define_native_fn("eq", stdlib::eq);
         self.define_native_fn("print", stdlib::print);
+        self.define_native_fn("apply", stdlib::apply);
         self.define_native_fn("cons", stdlib::cons);
         self.define_native_fn("list", stdlib::list);
         self.define_native_fn("car", stdlib::car);
@@ -145,6 +151,7 @@ pub type NativeFn = fn(&mut Vm, &[Value], Span) -> Result<Value, RuntimeError>;
 pub enum Value {
     Symbol(String),
     Number(f64),
+    Bool(bool),
     NativeFunction(NativeFn),
     Obj(ObjectRef),
     Nil,
@@ -155,6 +162,7 @@ impl Display for Value {
         match self {
             Value::Symbol(ident) => write!(f, "{ident}"),
             Value::Number(num) => write!(f, "{num}"),
+            Value::Bool(boolean) => write!(f, "{boolean}"),
             Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
             Value::Obj(obj_ref) => write!(f, "<object #{}>", obj_ref.0),
             Value::Nil => write!(f, "nil"),

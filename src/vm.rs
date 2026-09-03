@@ -122,6 +122,7 @@ impl<'ctx> Vm<'ctx> {
                 Value::Obj(obj_ref)
             }
             Constant::Number(number) => Value::Number(number),
+            Constant::Bool(boolean) => Value::Bool(boolean),
             Constant::Pair(pair) => {
                 let car = self.constant_to_value(*pair.car);
                 let cdr = self.constant_to_value(*pair.cdr);
@@ -139,18 +140,89 @@ impl<'ctx> Vm<'ctx> {
         }
     }
 
+    pub fn call_function(&mut self, f: Value, argc: usize, span: Span) -> Result<(), RuntimeError> {
+        match f {
+            Value::NativeFunction(f) => {
+                let mut args: Vec<Value> = vec![];
+                for _ in 0..argc {
+                    if let Some(arg) = self.stack.pop() {
+                        args.push(arg);
+                    } else {
+                        return Err(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span));
+                    }
+                }
+
+                args.reverse();
+                let result = f(self, &args[..], span)?;
+                self.stack.push(result);
+            }
+            Value::Obj(obj_ref) => {
+                let closure = self.ctx.heap.get(obj_ref).unwrap();
+                match closure {
+                    Object::Closure(closure) => {
+                        let arity = closure.unit.functions[closure.function].arity;
+
+                        if argc != arity {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(argc),
+                                    ArgCount::Exact(arity),
+                                ),
+                                span,
+                            ));
+                        }
+
+                        let base = self
+                            .stack
+                            .len()
+                            .checked_sub(arity)
+                            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
+
+                        self.frames.push(CallFrame {
+                            closure_ref: obj_ref,
+                            ip: 0,
+                            base,
+                        });
+                    }
+                    _ => {
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::NotAFunction(f.to_string()),
+                            span,
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::NotAFunction(f.to_string()),
+                    span,
+                ));
+            }
+        };
+        Ok(())
+    }
+
     pub fn run(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, RuntimeError> {
         assert!(unit.functions.len() > 0);
         // entry call frame
         let closure_ref = self.allocate_gc(Object::Closure(Closure::new(Rc::clone(&unit), 0)));
-        self.frames.push(CallFrame {
-            closure_ref, // entry function
-            ip: 0,
-            base: 0,
-        });
+        self.run_closure(Value::Obj(closure_ref))
+    }
+
+    pub fn run_closure(&mut self, f: Value) -> Result<Value, RuntimeError> {
+        if let Value::Obj(closure_ref) = f {
+            self.frames.push(CallFrame {
+                closure_ref,
+                ip: 0,
+                base: 0,
+            });
+        } else {
+            unreachable!()
+        }
 
         loop {
             if self.frames.is_empty() {
+                assert!(self.stack.len() == 1);
                 return Ok(self.stack.pop().unwrap());
             }
 
@@ -167,7 +239,7 @@ impl<'ctx> Vm<'ctx> {
 
                 let body = &unit.functions[closure.function].chunk;
                 let instr = body.code[frame.ip].clone();
-                let span = body.spans.get(&frame.ip).cloned();
+                let span = body.spans.get(&frame.ip).cloned().unwrap();
 
                 frame.ip += 1;
 
@@ -176,25 +248,22 @@ impl<'ctx> Vm<'ctx> {
 
             match instr {
                 Instr::PushNil => self.stack.push(Value::Nil),
+                Instr::PushBool(boolean) => self.stack.push(Value::Bool(boolean)),
                 Instr::PushConst(const_id) => {
                     let constant = unit.constants[const_id].clone();
                     let value = self.constant_to_value(constant);
                     self.stack.push(value);
                 }
                 Instr::Pop => {
-                    self.stack.pop().ok_or(RuntimeError::new(
-                        RuntimeErrorKind::StackUnderflow,
-                        span.unwrap(),
-                    ))?;
+                    self.stack
+                        .pop()
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
                 }
                 Instr::LoadGlobal(symbol_id) => {
                     if let Some(global) = self.ctx.globals.get(&symbol_id) {
                         self.stack.push(global.clone());
                     } else {
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::UndefinedVariable,
-                            span.unwrap(),
-                        ));
+                        return Err(RuntimeError::new(RuntimeErrorKind::UndefinedVariable, span));
                     }
                 }
                 Instr::SetGlobal(symbol) => {
@@ -202,10 +271,7 @@ impl<'ctx> Vm<'ctx> {
                         symbol,
                         self.stack
                             .last()
-                            .ok_or(RuntimeError::new(
-                                RuntimeErrorKind::StackUnderflow,
-                                span.unwrap(),
-                            ))?
+                            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
                             .clone(),
                     );
                 }
@@ -227,10 +293,7 @@ impl<'ctx> Vm<'ctx> {
                     let value = self
                         .stack
                         .last()
-                        .ok_or(RuntimeError::new(
-                            RuntimeErrorKind::StackUnderflow,
-                            span.unwrap(),
-                        ))?
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
                         .clone();
 
                     let capture_ref = closure.captures_ref[capture_id];
@@ -253,86 +316,21 @@ impl<'ctx> Vm<'ctx> {
                     if let Some(local) = self.stack.get(idx) {
                         self.stack.push(local.clone());
                     } else {
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::UndefinedVariable,
-                            span.unwrap(),
-                        ));
+                        return Err(RuntimeError::new(RuntimeErrorKind::UndefinedVariable, span));
                     }
                 }
                 Instr::SetLocal(slot) => {
                     let value = self
                         .stack
                         .last()
-                        .ok_or(RuntimeError::new(
-                            RuntimeErrorKind::StackUnderflow,
-                            span.unwrap(),
-                        ))?
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
                         .clone();
 
                     self.stack[base + slot] = value;
                 }
                 Instr::Call(argc) => {
                     let f = self.stack.pop().unwrap();
-
-                    match f {
-                        Value::NativeFunction(f) => {
-                            let mut args: Vec<Value> = vec![];
-                            for _ in 0..argc {
-                                if let Some(arg) = self.stack.pop() {
-                                    args.push(arg);
-                                } else {
-                                    return Err(RuntimeError::new(
-                                        RuntimeErrorKind::StackUnderflow,
-                                        span.unwrap(),
-                                    ));
-                                }
-                            }
-
-                            args.reverse();
-                            let result = f(self, &args[..], span.unwrap())?;
-                            self.stack.push(result);
-                        }
-                        Value::Obj(obj_ref) => {
-                            let closure = self.ctx.heap.get(obj_ref).unwrap();
-                            match closure {
-                                Object::Closure(closure) => {
-                                    let arity = closure.unit.functions[closure.function].arity;
-
-                                    if argc != arity {
-                                        return Err(RuntimeError::new(
-                                            RuntimeErrorKind::InvalidArgumentCount(argc, arity),
-                                            span.unwrap(),
-                                        ));
-                                    }
-
-                                    let base = self.stack.len().checked_sub(arity).ok_or(
-                                        RuntimeError::new(
-                                            RuntimeErrorKind::StackUnderflow,
-                                            span.unwrap(),
-                                        ),
-                                    )?;
-
-                                    self.frames.push(CallFrame {
-                                        closure_ref: obj_ref,
-                                        ip: 0,
-                                        base,
-                                    });
-                                }
-                                _ => {
-                                    return Err(RuntimeError::new(
-                                        RuntimeErrorKind::NotAFunction(f.to_string()),
-                                        span.unwrap(),
-                                    ));
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(RuntimeError::new(
-                                RuntimeErrorKind::NotAFunction(f.to_string()),
-                                span.unwrap(),
-                            ));
-                        }
-                    }
+                    self.call_function(f, argc, span)?;
                 }
                 Instr::MakeClosure(id) => {
                     assert!(id < unit.functions.len());
@@ -379,10 +377,23 @@ impl<'ctx> Vm<'ctx> {
                     self.stack.push(Value::Obj(obj_ref));
                 }
                 Instr::ExitScope(slot) => {
-                    self.exit_scope(base + slot, span.unwrap())?;
+                    self.exit_scope(base + slot, span)?;
+                }
+                Instr::Jump(ip) => {
+                    self.current_mut().ip = ip;
+                }
+                Instr::JumpIfFalse(ip) => {
+                    if let Value::Bool(value) = self
+                        .stack
+                        .pop()
+                        .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?
+                        && !value
+                    {
+                        self.current_mut().ip = ip;
+                    }
                 }
                 Instr::Return => {
-                    self.exit_scope(base, span.unwrap())?;
+                    self.exit_scope(base, span)?;
                     self.frames.pop();
                 }
             }

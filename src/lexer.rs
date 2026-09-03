@@ -18,9 +18,9 @@ impl Display for TokenKind {
         match self {
             Self::OpenParen => write!(f, "'('"),
             Self::CloseParen => write!(f, "')'"),
-            Self::Number(_) => write!(f, "number"),
             Self::Symbol(_) => write!(f, "symbol"),
             Self::String(_) => write!(f, "string"),
+            Self::Number(_) => write!(f, "number"),
             Self::Dot => write!(f, "."),
             Self::Quote => write!(f, "'"),
         }

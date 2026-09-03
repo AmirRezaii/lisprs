@@ -47,8 +47,8 @@ impl Display for CompiledUnit {
 
         for func in &self.functions {
             writeln!(f, "func(arity: {}):", func.arity)?;
-            for c in &func.chunk.code {
-                write!(f, "  ")?;
+            for (i, c) in func.chunk.code.iter().enumerate() {
+                write!(f, "{i:2}  ")?;
                 writeln!(f, "{c}")?;
             }
         }
@@ -68,6 +68,7 @@ pub enum Constant {
     Symbol(SymbolId),
     String(String),
     Number(f64),
+    Bool(bool),
     Pair(PairConst),
     Nil,
 }
@@ -78,6 +79,7 @@ impl Display for Constant {
             Self::Symbol(symbol) => write!(f, "<symbol #{symbol}>"),
             Self::String(string) => write!(f, "\"{string}\""),
             Self::Number(num) => write!(f, "{num}"),
+            Self::Bool(boolean) => write!(f, "{boolean}"),
             Self::Pair(pair) => write!(f, "({} . {})", pair.car, pair.cdr),
             Self::Nil => write!(f, "nil"),
         }
@@ -87,6 +89,7 @@ impl Display for Constant {
 #[derive(Debug, Clone)]
 pub enum Instr {
     PushNil,
+    PushBool(bool),
     PushConst(ConstId),
     Pop,
     LoadGlobal(SymbolId),
@@ -98,6 +101,8 @@ pub enum Instr {
     Call(usize),
     MakeClosure(FunctionId),
     ExitScope(Slot),
+    Jump(usize),
+    JumpIfFalse(usize),
     Return,
 }
 
@@ -114,8 +119,11 @@ impl Display for Instr {
             Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
             Instr::Pop => write!(f, "POP")?,
             Instr::PushNil => write!(f, "PUSH_NIL")?,
+            Instr::PushBool(boolean) => write!(f, "PUSH_BOOL(value: {boolean})")?,
             Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
-            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot}")?,
+            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot})")?,
+            Instr::Jump(ip) => write!(f, "JUMP(ip: {ip})")?,
+            Instr::JumpIfFalse(ip) => write!(f, "JUMP_IF_FALSE(ip: {ip})")?,
             Instr::Return => write!(f, "RETURN")?,
         }
         Ok(())
@@ -168,10 +176,17 @@ struct Local {
 }
 
 #[derive(Debug)]
+struct LoopContext {
+    break_jumps: Vec<usize>,
+    continue_target: usize,
+}
+
+#[derive(Debug)]
 struct FunctionCompiler {
     func_id: FunctionId,
     locals: Vec<Local>,
     scope_depth: usize,
+    loop_stack: Vec<LoopContext>,
 }
 impl FunctionCompiler {
     fn new(id: FunctionId) -> Self {
@@ -179,6 +194,7 @@ impl FunctionCompiler {
             func_id: id,
             locals: Vec::new(),
             scope_depth: 0,
+            loop_stack: Vec::new(),
         }
     }
 }
@@ -205,13 +221,25 @@ impl<'a> Compiler<'a> {
         self.functions.last_mut().unwrap()
     }
 
-    fn emit(&mut self, instr: Instr, span: Span) {
+    fn ip(&self) -> usize {
+        self.unit.functions[self.current().func_id].chunk.code.len()
+    }
+
+    fn emit(&mut self, instr: Instr, span: Span) -> usize {
         let id = self.current().func_id;
         assert!(id < self.unit.functions.len());
         let body = &mut self.unit.functions[id].chunk;
         let instr_id = body.code.len();
         body.code.push(instr);
         body.spans.insert(instr_id, span);
+        instr_id
+    }
+
+    fn patch_instr(&mut self, ip: usize, instr: Instr) {
+        let id = self.current().func_id;
+        assert!(id < self.unit.functions.len());
+        let body = &mut self.unit.functions[id].chunk;
+        body.code[ip] = instr;
     }
 
     fn begin_scope(&mut self) {
@@ -322,7 +350,10 @@ impl<'a> Compiler<'a> {
     fn compile_defun(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if args.len() < 3 {
             return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 3),
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Least(3),
+                ),
                 span,
             ));
         }
@@ -342,7 +373,10 @@ impl<'a> Compiler<'a> {
 
         if args.len() < 2 {
             return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Least(2),
+                ),
                 span,
             ));
         }
@@ -374,7 +408,10 @@ impl<'a> Compiler<'a> {
     fn compile_setq(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
         if args.len() != 2 {
             return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Exact(2),
+                ),
                 span,
             ));
         }
@@ -423,7 +460,10 @@ impl<'a> Compiler<'a> {
         self.begin_scope();
         if args.len() < 2 {
             return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 2),
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Least(2),
+                ),
                 span,
             ));
         }
@@ -439,7 +479,10 @@ impl<'a> Compiler<'a> {
             let local = local.into_list()?;
             if local.len() != 2 {
                 return Err(CompileError::new(
-                    CompileErrorKind::InvalidArgumentCount(args.len(), 2),
+                    CompileErrorKind::InvalidArgumentCount(
+                        ArgCount::Exact(args.len()),
+                        ArgCount::Exact(2),
+                    ),
                     span,
                 ));
             }
@@ -468,17 +511,148 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_return(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
-        if args.len() != 1 {
+    fn compile_if(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() != 3 {
             return Err(CompileError::new(
-                CompileErrorKind::InvalidArgumentCount(args.len(), 1),
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Exact(3),
+                ),
                 span,
             ));
         }
 
-        let expr = &args[0];
+        self.compile_expr(&args[0])?; // condition
+        let first_jump = self.emit(Instr::JumpIfFalse(0), span);
 
-        self.compile_expr(expr)?;
+        self.compile_expr(&args[1])?; // then body
+        let second_jump = self.emit(Instr::Jump(0), span);
+        self.patch_instr(first_jump, Instr::JumpIfFalse(second_jump + 1));
+        self.compile_expr(&args[2])?; // else body
+        self.patch_instr(second_jump, Instr::Jump(self.ip()));
+
+        Ok(())
+    }
+
+    fn compile_cond(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() < 1 {
+            return Err(CompileError::new(
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Least(1),
+                ),
+                span,
+            ));
+        }
+
+        let mut end_jumps: Vec<usize> = Vec::new();
+        let mut reached_else = false;
+
+        for clause in args {
+            let span = clause.span;
+            if let ExprKind::List(clause) = &clause.kind {
+                if clause.len() < 2 {
+                    return Err(CompileError::new(
+                        CompileErrorKind::InvalidArgumentCount(
+                            ArgCount::Exact(clause.len()),
+                            ArgCount::Least(2),
+                        ),
+                        span,
+                    ));
+                }
+                if reached_else {
+                    return Err(CompileError::new(
+                        CompileErrorKind::InvalidArgument {
+                            given: "condition clause after else".to_string(),
+                            expected: "end".to_string(),
+                        },
+                        span,
+                    ));
+                }
+
+                let (condition, body) = clause.split_first().unwrap();
+                if let ExprKind::Symbol(symbol) = &condition.kind
+                    && symbol == "else"
+                {
+                    self.compile_progn(body, span)?;
+                    end_jumps.push(self.emit(Instr::Jump(0), span));
+                    reached_else = true;
+                    continue;
+                }
+
+                self.compile_expr(condition)?;
+                let jump_next = self.emit(Instr::JumpIfFalse(0), span);
+                self.compile_progn(body, span)?;
+                end_jumps.push(self.emit(Instr::Jump(0), span));
+                self.patch_instr(jump_next, Instr::JumpIfFalse(self.ip()));
+            } else {
+                return Err(CompileError::new(
+                    CompileErrorKind::InvalidArgument {
+                        given: clause.kind.to_string(),
+                        expected: "list".to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
+        self.emit(Instr::PushNil, span);
+        for end_jump in end_jumps {
+            let end = self.ip();
+            self.patch_instr(end_jump, Instr::Jump(end));
+        }
+
+        Ok(())
+    }
+
+    fn compile_while(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() < 2 {
+            return Err(CompileError::new(
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Least(2),
+                ),
+                span,
+            ));
+        }
+
+        let loop_start = self.ip();
+        self.current_mut().loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_target: loop_start,
+        });
+
+        self.compile_expr(&args[0])?; // condition
+        let exit_jump = self.emit(Instr::JumpIfFalse(0), span);
+
+        self.compile_progn(&args[1..], span)?; // while body
+        let loop_jump = self.emit(Instr::Jump(loop_start), span);
+
+        self.patch_instr(exit_jump, Instr::JumpIfFalse(loop_jump + 1));
+
+        for break_ip in self.current_mut().loop_stack.pop().unwrap().break_jumps {
+            self.patch_instr(break_ip, Instr::Jump(loop_jump + 1));
+        }
+
+        Ok(())
+    }
+
+    fn compile_return(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() > 1 {
+            return Err(CompileError::new(
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Between(0, 1),
+                ),
+                span,
+            ));
+        }
+
+        if args.len() == 1 {
+            let expr = &args[0];
+            self.compile_expr(expr)?;
+        } else {
+            self.emit(Instr::PushNil, span);
+        }
 
         self.emit(Instr::Return, span);
 
@@ -555,7 +729,10 @@ impl<'a> Compiler<'a> {
                     "quote" => {
                         if args.len() != 1 {
                             return Err(CompileError::new(
-                                CompileErrorKind::InvalidArgumentCount(args.len(), 1),
+                                CompileErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(args.len()),
+                                    ArgCount::Exact(1),
+                                ),
                                 span,
                             ));
                         }
@@ -580,6 +757,33 @@ impl<'a> Compiler<'a> {
                     }
                     "let" => {
                         self.compile_let(args, span, false)?;
+                    }
+                    "if" => {
+                        self.compile_if(args, span)?;
+                    }
+                    "cond" => {
+                        self.compile_cond(args, span)?;
+                    }
+                    "while" => {
+                        self.compile_while(args, span)?;
+                    }
+                    "break" => {
+                        let ip = self.emit(Instr::Jump(0), span);
+                        self.current_mut()
+                            .loop_stack
+                            .last_mut()
+                            .ok_or(CompileError::new(CompileErrorKind::LoopNotFound, span))?
+                            .break_jumps
+                            .push(ip);
+                    }
+                    "continue" => {
+                        let ip = self
+                            .current()
+                            .loop_stack
+                            .last()
+                            .ok_or(CompileError::new(CompileErrorKind::LoopNotFound, span))?
+                            .continue_target;
+                        self.emit(Instr::Jump(ip), span);
                     }
                     "return" => {
                         self.compile_return(args, span)?;
@@ -615,13 +819,23 @@ impl<'a> Compiler<'a> {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match &expr.kind {
-            ExprKind::Symbol(symbol) => {
-                if symbol == "nil" {
+            ExprKind::Symbol(symbol) => match symbol.as_str() {
+                "nil" => {
                     self.emit(Instr::PushNil, expr.span);
                     return Ok(());
                 }
-                self.load_variable(symbol, expr.span);
-            }
+                "true" => {
+                    self.emit(Instr::PushBool(true), expr.span);
+                    return Ok(());
+                }
+                "false" => {
+                    self.emit(Instr::PushBool(false), expr.span);
+                    return Ok(());
+                }
+                other => {
+                    self.load_variable(other, expr.span);
+                }
+            },
             ExprKind::Number(value) => {
                 let id = self.unit.add_const(Constant::Number(*value));
                 self.emit(Instr::PushConst(id), expr.span);
