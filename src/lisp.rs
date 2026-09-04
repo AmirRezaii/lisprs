@@ -47,36 +47,28 @@ impl Lisp {
 
                     let args = self.vm.stack[arg_base..].to_vec();
 
-                    let result = native(self, args.as_slice(), span);
+                    let result = native(self, args.as_slice());
+                    let result = result.map_err(|err| err.at(span))?;
 
                     self.vm.stack.truncate(arg_base);
-                    match result {
-                        Ok(value) => {
-                            self.vm.stack.push(value);
-                            Ok(())
-                        }
-
-                        Err(error) => Err(error.into()),
-                    }
+                    self.vm.stack.push(result);
+                    Ok(())
                 } else if let Ok(closure) = Closure::from_value(&self.runtime, &function) {
                     let proto = &closure.unit.functions[closure.function];
                     let arity = proto.arity;
                     let base = self.vm.stack.len() - arity; // TODO: check arity and argc
 
                     self.vm.frames.push(CallFrame::new(
-                        ObjectRef::from_value(&self.runtime, &function)
-                            .map_err(|err| RuntimeError::new(err, span))?,
+                        ObjectRef::from_value(&self.runtime, &function)?,
                         base,
                     ));
                     Ok(())
                 } else {
-                    Err(RuntimeError::new(
-                        RuntimeErrorKind::TypeMismatch(
-                            function.ty(&self.runtime).to_string(),
-                            "function".to_string(),
-                        ),
-                        span,
-                    ))
+                    Err(RuntimeErrorKind::TypeMismatch(
+                        function.ty(&self.runtime).to_string(),
+                        "function".to_string(),
+                    )
+                    .into())
                 }
             }
         }
@@ -105,9 +97,9 @@ impl Lisp {
         Ok(self.vm.stack.pop().unwrap())
     }
 
-    pub fn call(&mut self, f: Value, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    pub fn call(&mut self, f: Value, args: &[Value]) -> Result<Value, RuntimeError> {
         match f {
-            Value::NativeFunction(native_fn) => native_fn(self, args, span),
+            Value::NativeFunction(native_fn) => native_fn(self, args),
             Value::Obj(closure_ref) => {
                 let calle_frame = self.vm.frames.len();
 
@@ -118,13 +110,11 @@ impl Lisp {
                 self.vm.stack.append(&mut args.to_vec());
                 self.run_till_depth(calle_frame)
             }
-            other => Err(RuntimeError::new(
-                RuntimeErrorKind::TypeMismatch(
-                    other.ty(&self.runtime).to_string(),
-                    "function".to_string(),
-                ),
-                span,
-            )),
+            other => Err(RuntimeErrorKind::TypeMismatch(
+                other.ty(&self.runtime).to_string(),
+                "function".to_string(),
+            )
+            .into()),
         }
     }
 
@@ -136,7 +126,7 @@ impl Lisp {
         let unit = Compiler::compile(&ast, &mut self.runtime.symbols, &[])?;
 
         let entry = self.alloc_closure(unit)?;
-        let result = self.call(entry, &[], Span::new(0, source_code.len()))?;
+        let result = self.call(entry, &[])?; // TODO: maybe add span here?
         Ok(result)
     }
 

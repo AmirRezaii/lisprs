@@ -106,13 +106,13 @@ impl Runtime {
     }
 }
 
-pub type NativeFn = fn(&mut Lisp, &[Value], Span) -> Result<Value, RuntimeError>;
+pub type NativeFn = fn(&mut Lisp, &[Value]) -> Result<Value, RuntimeError>;
 
 pub trait FromValue: Sized {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind>;
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError>;
 }
 pub trait ToValue {
-    fn to_value(&self, runtime: &mut Runtime) -> Result<Value, RuntimeErrorKind>;
+    fn to_value(&self, runtime: &mut Runtime) -> Result<Value, RuntimeError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,55 +129,60 @@ pub enum Value {
 pub struct Symbol(pub String);
 
 impl FromValue for f64 {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         match value {
             Value::Number(n) => Ok(*n),
             other => Err(RuntimeErrorKind::TypeMismatch(
                 other.ty(rt).to_string(),
                 "number".to_string(),
-            )),
+            )
+            .into()),
         }
     }
 }
 impl FromValue for bool {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         match value {
             Value::Bool(n) => Ok(*n),
             other => Err(RuntimeErrorKind::TypeMismatch(
                 other.ty(rt).to_string(),
                 "bool".to_string(),
-            )),
+            )
+            .into()),
         }
     }
 }
 impl FromValue for Symbol {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         match value {
             Value::Symbol(n) => Ok(Symbol(rt.symbols.resolve(*n).to_string())),
             other => Err(RuntimeErrorKind::TypeMismatch(
                 other.ty(rt).to_string(),
                 "symbol".to_string(),
-            )),
+            )
+            .into()),
         }
     }
 }
 impl FromValue for NativeFn {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         match value {
             Value::NativeFunction(n) => Ok(*n),
             other => Err(RuntimeErrorKind::TypeMismatch(
                 other.ty(rt).to_string(),
                 "native".to_string(),
-            )),
+            )
+            .into()),
         }
     }
 }
 impl FromValue for String {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         let err = Err(RuntimeErrorKind::TypeMismatch(
             value.ty(rt).to_string(),
             "string".to_string(),
-        ));
+        )
+        .into());
         match value {
             Value::Obj(obj_ref) => {
                 let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
@@ -191,11 +196,10 @@ impl FromValue for String {
     }
 }
 impl FromValue for Vec<Value> {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
-        let err = Err(RuntimeErrorKind::TypeMismatch(
-            value.ty(rt).to_string(),
-            "list".to_string(),
-        ));
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
+        let err = Err(
+            RuntimeErrorKind::TypeMismatch(value.ty(rt).to_string(), "list".to_string()).into(),
+        );
         match value {
             Value::Obj(obj_ref) => {
                 let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
@@ -226,11 +230,12 @@ impl FromValue for Vec<Value> {
     }
 }
 impl FromValue for Closure {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         let err = Err(RuntimeErrorKind::TypeMismatch(
             value.ty(rt).to_string(),
             "closure".to_string(),
-        ));
+        )
+        .into());
         match value {
             Value::Obj(obj_ref) => {
                 let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
@@ -244,11 +249,12 @@ impl FromValue for Closure {
     }
 }
 impl FromValue for ObjectRef {
-    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeError> {
         let err = Err(RuntimeErrorKind::TypeMismatch(
             value.ty(rt).to_string(),
             "object_ref".to_string(),
-        ));
+        )
+        .into());
         match value {
             Value::Obj(obj_ref) => Ok(*obj_ref),
             _ => err,

@@ -81,7 +81,7 @@ fn expand_macro(
     let args: Vec<Value> = args.iter().map(|arg| expr_to_val(lisp, arg)).collect();
 
     let f = lisp.alloc_closure(mac.body.clone())?;
-    let result = lisp.call(f, &args, span)?;
+    let result = lisp.call(f, &args)?;
     val_to_expr(lisp, result, span)
         .ok_or(MacroError::new(MacroErrorKind::InvalidExpansion, span).into())
 }

@@ -45,7 +45,7 @@ impl From<CompileError> for Error {
 }
 impl From<RuntimeError> for Error {
     fn from(err: RuntimeError) -> Self {
-        Self::new(ErrorKind::Runtime(err.kind), err.span)
+        Self::new(ErrorKind::Runtime(err.kind), err.span.unwrap())
     }
 }
 
@@ -155,7 +155,7 @@ impl From<Error> for MacroError {
 }
 impl From<RuntimeError> for MacroError {
     fn from(err: RuntimeError) -> Self {
-        let span = err.span;
+        let span = err.span.unwrap();
         MacroError {
             kind: MacroErrorKind::EvaluationError(Box::new(err.into())),
             span,
@@ -274,12 +274,26 @@ pub enum RuntimeErrorKind {
 #[derive(Debug)]
 pub struct RuntimeError {
     kind: RuntimeErrorKind,
-    span: Span,
+    span: Option<Span>,
+}
+
+impl From<RuntimeErrorKind> for RuntimeError {
+    fn from(kind: RuntimeErrorKind) -> Self {
+        Self { kind, span: None }
+    }
 }
 
 impl RuntimeError {
-    pub fn new(kind: RuntimeErrorKind, span: Span) -> Self {
+    pub fn new(kind: RuntimeErrorKind, span: Option<Span>) -> Self {
         Self { kind, span }
+    }
+
+    pub fn at(mut self, span: Span) -> Self {
+        if self.span.is_none() {
+            self.span = Some(span);
+        }
+
+        self
     }
 }
 
