@@ -1,7 +1,7 @@
 (defmacro when (condition body)
   (list 'if condition body nil))
 
-(let nil (print "wow"))
+(let () (print "wow"))
 
 ; (defmacro when (condition body)
 ;   (list 'if condition body))

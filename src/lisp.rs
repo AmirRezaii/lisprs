@@ -15,13 +15,14 @@ pub enum Action {
     Call {
         function: Value,
         argc: usize,
-        span: Span,
+        span: Location,
     },
 }
 
 pub struct Lisp {
     pub runtime: Runtime,
     vm: Vm,
+    sources: SourceMap,
 }
 
 impl Lisp {
@@ -31,6 +32,7 @@ impl Lisp {
         Self {
             runtime,
             vm: Vm::new(),
+            sources: SourceMap::new(),
         }
     }
 
@@ -40,7 +42,7 @@ impl Lisp {
             Action::Call {
                 function,
                 argc,
-                span,
+                span: location,
             } => {
                 if let Ok(native) = NativeFn::from_value(&self.runtime, &function) {
                     let arg_base = self.vm.stack.len() - argc;
@@ -48,7 +50,7 @@ impl Lisp {
                     let args = self.vm.stack[arg_base..].to_vec();
 
                     let result = native(self, args.as_slice());
-                    let result = result.map_err(|err| err.at(span))?;
+                    let result = result.map_err(|err| err.at(location))?;
 
                     self.vm.stack.truncate(arg_base);
                     self.vm.stack.push(result);
@@ -118,16 +120,26 @@ impl Lisp {
         }
     }
 
-    pub fn execute(&mut self, source_code: &str) -> Result<Value, Error> {
-        let ast = parse_module(source_code)?;
-        let mut macros: Vec<Macro> = Vec::new();
-        let ast = expand(self, &mut macros, ast)?;
+    pub fn execute(&mut self, source_name: &str, source_text: &str) -> Result<Value, Error> {
+        let source_id = self.sources.add(source_name, source_text);
 
-        let unit = Compiler::compile(&ast, &mut self.runtime.symbols, &[])?;
+        let ast = parse_module(source_text)?;
+        let ast_span = ast.span;
+        let mut macros: Vec<Macro> = Vec::new();
+        let ast = expand(
+            self,
+            &mut macros,
+            ast,
+            Location {
+                source: source_id,
+                span: ast_span,
+            },
+        )?;
+
+        let unit = Compiler::compile(&ast, &mut self.runtime.symbols, &[], source_id)?;
 
         let entry = self.alloc_closure(unit)?;
-        let result = self.call(entry, &[])?; // TODO: maybe add span here?
-        Ok(result)
+        self.call(entry, &[]).map_err(Into::into) // TODO: maybe add span here?
     }
 
     pub fn list_to_pair(&mut self, elements: &[Value], tail: Value) -> Value {
@@ -141,6 +153,46 @@ impl Lisp {
             cur = Value::Obj(pair_ref);
         }
         cur
+    }
+
+    pub fn render_error(&mut self, err: Error, cur_name: &str, cur_source: &str) -> String {
+        match err {
+            Error::Lex(err) => format!(
+                "{}: {}\n{}",
+                cur_name,
+                err.kind,
+                err.span.render(cur_source)
+            ),
+            Error::Parse(err) => format!(
+                "{}: {}\n{}",
+                cur_name,
+                err.kind,
+                err.span.render(cur_source)
+            ),
+            Error::Compile(err) => format!(
+                "{}: {}\n{}",
+                cur_name,
+                err.kind,
+                err.span.render(cur_source)
+            ),
+            Error::Runtime(err) => {
+                let location = err.location.unwrap();
+                format!(
+                    "{}: {}\n{}",
+                    cur_name,
+                    err.kind,
+                    location
+                        .span
+                        .render(self.sources.get(location.source).text.as_str())
+                )
+            }
+            Error::Macro(err) => format!(
+                "{}: {}\n{}",
+                cur_name,
+                err.kind,
+                err.span.render(cur_source)
+            ),
+        }
     }
 }
 

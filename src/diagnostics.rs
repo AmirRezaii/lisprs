@@ -1,137 +1,147 @@
 #[derive(Debug)]
-pub enum ErrorKind {
-    Lex(LexErrorKind),
-    Parse(ParseErrorKind),
-    Macro(MacroErrorKind),
-    Compile(CompileErrorKind),
-    Runtime(RuntimeErrorKind),
-}
-
-#[derive(Debug)]
-pub struct Error {
-    kind: ErrorKind,
-    pub span: Span,
-}
-
-impl Error {
-    fn new(kind: ErrorKind, span: Span) -> Self {
-        Self { kind, span }
-    }
+pub enum Error {
+    Lex(LexError),
+    Parse(ParseError),
+    Macro(MacroError),
+    Compile(CompileError),
+    Runtime(RuntimeError),
 }
 
 impl From<LexError> for Error {
     fn from(err: LexError) -> Self {
-        Error::new(ErrorKind::Lex(err.kind), err.span)
+        Error::Lex(err)
     }
 }
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Self {
-        let kind = match err.kind {
-            ParseErrorKind::Lex(err) => ErrorKind::Lex(err),
-            _ => ErrorKind::Parse(err.kind),
-        };
-        Error::new(kind, err.span)
+        let span = err.span;
+        match err.kind {
+            ParseErrorKind::Lex(err) => Error::Lex(LexError { kind: err, span }),
+            _ => Error::Parse(err),
+        }
     }
 }
 impl From<MacroError> for Error {
     fn from(err: MacroError) -> Self {
-        Self::new(ErrorKind::Macro(err.kind), err.span)
+        Error::Macro(err)
     }
 }
 impl From<CompileError> for Error {
     fn from(err: CompileError) -> Self {
-        Self::new(ErrorKind::Compile(err.kind), err.span)
+        Error::Compile(err)
     }
 }
 impl From<RuntimeError> for Error {
     fn from(err: RuntimeError) -> Self {
-        Self::new(ErrorKind::Runtime(err.kind), err.span.unwrap())
+        Error::Runtime(err)
     }
 }
 
-impl Display for Error {
+impl Display for LexErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            ErrorKind::Lex(err) => match err {
-                LexErrorKind::UnclosedString => {
-                    write!(f, "unclosed string")
-                }
-                LexErrorKind::InvalidNumber => {
-                    write!(f, "invalid number")
-                }
-                LexErrorKind::InvalidEscape(ch) => {
-                    write!(f, "invalid escape '\\{ch}'")
-                }
-            },
-            ErrorKind::Parse(err) => match err {
-                ParseErrorKind::UnexpectedToken { got, expected } => {
-                    write!(f, "expected {} but got {}", expected, got)
-                }
-                ParseErrorKind::ExtraParen(_token) => {
-                    write!(f, "extra parenthesis")
-                }
-                ParseErrorKind::Lex(_) => unreachable!(),
-            },
-            ErrorKind::Macro(err) => match err {
-                MacroErrorKind::EvaluationError(err) => write!(f, "{err}"),
-                MacroErrorKind::InvalidArgumentCount(given, expected) => write!(
-                    f,
-                    "expected {} number of arguments but got {}",
-                    expected, given
-                ),
-                MacroErrorKind::InvalidExpansion => write!(
-                    f,
-                    "macro returned a value that cannot be used as an expression"
-                ),
-            },
-            ErrorKind::Compile(err) => match err {
-                CompileErrorKind::InvalidArgument { given, expected } => {
-                    write!(
-                        f,
-                        "expected argument of type '{expected}' but got '{given}'"
-                    )
-                }
-                CompileErrorKind::InvalidArgumentCount(given, expected) => {
-                    write!(
-                        f,
-                        "expected {} number of arguments but got {}",
-                        expected, given
-                    )
-                }
-                CompileErrorKind::UnexpectedCall(expr) => {
-                    write!(f, "cannot call a function on {expr}")
-                }
-                CompileErrorKind::UnquotedDottedList => {
-                    write!(f, "dotted list is only valid as quoted data")
-                }
-                CompileErrorKind::LoopNotFound => {
-                    write!(f, "no loop found")
-                }
-            },
-            ErrorKind::Runtime(err) => match err {
-                RuntimeErrorKind::UndefinedVariable => {
-                    write!(f, "undefined variable")
-                }
-                RuntimeErrorKind::NotAFunction(value) => {
-                    write!(f, "expected a function but got '{}'", value)
-                }
-                RuntimeErrorKind::TypeMismatch(given, expected) => {
-                    write!(f, "expected type '{}' but got '{}'", expected, given)
-                }
-                RuntimeErrorKind::InvalidArgumentCount(given, expected) => {
-                    write!(
-                        f,
-                        "expected {} number of arguments but got {}",
-                        expected, given
-                    )
-                }
-                RuntimeErrorKind::StackUnderflow => write!(f, "stack underflow"),
-            },
+        match self {
+            LexErrorKind::UnclosedString => {
+                write!(f, "unclosed string")
+            }
+            LexErrorKind::InvalidNumber => {
+                write!(f, "invalid number")
+            }
+            LexErrorKind::InvalidEscape(ch) => {
+                write!(f, "invalid escape '\\{ch}'")
+            }
         }
     }
 }
-
-impl std::error::Error for Error {}
+impl Display for ParseErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseErrorKind::UnexpectedToken { got, expected } => {
+                write!(f, "expected {} but got {}", expected, got)
+            }
+            ParseErrorKind::ExtraParen(_token) => {
+                write!(f, "extra parenthesis")
+            }
+            ParseErrorKind::Lex(_) => unreachable!(),
+        }
+    }
+}
+impl Display for CompileErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompileErrorKind::InvalidArgument { given, expected } => {
+                write!(
+                    f,
+                    "expected argument of type '{expected}' but got '{given}'"
+                )
+            }
+            CompileErrorKind::InvalidArgumentCount(given, expected) => {
+                write!(
+                    f,
+                    "expected {} number of arguments but got {}",
+                    expected, given
+                )
+            }
+            CompileErrorKind::UnexpectedCall(expr) => {
+                write!(f, "cannot call a function on {expr}")
+            }
+            CompileErrorKind::UnquotedDottedList => {
+                write!(f, "dotted list is only valid as quoted data")
+            }
+            CompileErrorKind::LoopNotFound => {
+                write!(f, "no loop found")
+            }
+        }
+    }
+}
+impl Display for RuntimeErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeErrorKind::UndefinedVariable => {
+                write!(f, "undefined variable")
+            }
+            RuntimeErrorKind::NotAFunction(value) => {
+                write!(f, "expected a function but got '{}'", value)
+            }
+            RuntimeErrorKind::TypeMismatch(given, expected) => {
+                write!(f, "expected type '{}' but got '{}'", expected, given)
+            }
+            RuntimeErrorKind::InvalidArgumentCount(given, expected) => {
+                write!(
+                    f,
+                    "expected {} number of arguments but got {}",
+                    expected, given
+                )
+            }
+        }
+    }
+}
+impl Display for MacroErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MacroErrorKind::EvaluationError(err) => write!(f, "{err}"),
+            MacroErrorKind::InvalidArgumentCount(given, expected) => write!(
+                f,
+                "expected {} number of arguments but got {}",
+                expected, given
+            ),
+            MacroErrorKind::InvalidExpansion => write!(
+                f,
+                "macro returned a value that cannot be used as an expression"
+            ),
+        }
+    }
+}
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Compile(err) => write!(f, "{}", err.kind),
+            Error::Lex(err) => write!(f, "{}", err.kind),
+            Error::Parse(err) => write!(f, "{}", err.kind),
+            Error::Runtime(err) => write!(f, "{}", err.kind),
+            Error::Macro(err) => write!(f, "{}", err.kind),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum MacroErrorKind {
@@ -139,14 +149,21 @@ pub enum MacroErrorKind {
     InvalidExpansion,
     EvaluationError(Box<Error>),
 }
+#[derive(Debug)]
 pub struct MacroError {
-    kind: MacroErrorKind,
-    span: Span,
+    pub kind: MacroErrorKind,
+    pub span: Span,
 }
 
 impl From<Error> for MacroError {
     fn from(err: Error) -> Self {
-        let span = err.span;
+        let span = match &err {
+            Error::Compile(err) => err.span,
+            Error::Lex(err) => err.span,
+            Error::Macro(err) => err.span,
+            Error::Parse(err) => err.span,
+            Error::Runtime(err) => err.location.unwrap().span,
+        };
         MacroError {
             kind: MacroErrorKind::EvaluationError(Box::new(err)),
             span,
@@ -155,7 +172,7 @@ impl From<Error> for MacroError {
 }
 impl From<RuntimeError> for MacroError {
     fn from(err: RuntimeError) -> Self {
-        let span = err.span.unwrap();
+        let span = err.location.unwrap().span;
         MacroError {
             kind: MacroErrorKind::EvaluationError(Box::new(err.into())),
             span,
@@ -206,8 +223,8 @@ pub enum ParseErrorKind {
 
 #[derive(Debug)]
 pub struct ParseError {
-    kind: ParseErrorKind,
-    span: Span,
+    pub kind: ParseErrorKind,
+    pub span: Span,
 }
 
 impl ParseError {
@@ -252,8 +269,8 @@ pub enum CompileErrorKind {
 
 #[derive(Debug)]
 pub struct CompileError {
-    kind: CompileErrorKind,
-    span: Span,
+    pub kind: CompileErrorKind,
+    pub span: Span,
 }
 
 impl CompileError {
@@ -268,33 +285,70 @@ pub enum RuntimeErrorKind {
     NotAFunction(String),
     TypeMismatch(String, String),
     InvalidArgumentCount(ArgCount, ArgCount),
-    StackUnderflow,
 }
 
 #[derive(Debug)]
 pub struct RuntimeError {
-    kind: RuntimeErrorKind,
-    span: Option<Span>,
+    pub kind: RuntimeErrorKind,
+    pub location: Option<Location>,
 }
 
 impl From<RuntimeErrorKind> for RuntimeError {
     fn from(kind: RuntimeErrorKind) -> Self {
-        Self { kind, span: None }
+        Self {
+            kind,
+            location: None,
+        }
     }
 }
 
 impl RuntimeError {
-    pub fn new(kind: RuntimeErrorKind, span: Option<Span>) -> Self {
-        Self { kind, span }
-    }
-
-    pub fn at(mut self, span: Span) -> Self {
-        if self.span.is_none() {
-            self.span = Some(span);
+    pub fn at(mut self, location: Location) -> Self {
+        if self.location.is_none() {
+            self.location = Some(location);
         }
 
         self
     }
+}
+
+pub struct SourceFile {
+    pub name: String,
+    pub text: String,
+}
+
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    pub fn new() -> Self {
+        Self { files: Vec::new() }
+    }
+
+    pub fn add(&mut self, name: impl Into<String>, text: impl Into<String>) -> SourceId {
+        let id = SourceId(self.files.len());
+
+        self.files.push(SourceFile {
+            name: name.into(),
+            text: text.into(),
+        });
+
+        id
+    }
+
+    pub fn get(&self, id: SourceId) -> &SourceFile {
+        &self.files[id.0]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceId(usize);
+
+#[derive(Debug, Clone, Copy)]
+pub struct Location {
+    pub source: SourceId,
+    pub span: Span,
 }
 
 #[derive(Debug, Copy, Clone)]

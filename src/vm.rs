@@ -44,14 +44,14 @@ impl Vm {
         self.frames.last_mut().unwrap()
     }
 
-    fn exit_scope(&mut self, ctx: &mut Runtime, base: usize) -> Result<(), RuntimeError> {
+    fn exit_scope(&mut self, rt: &mut Runtime, base: usize) -> Result<(), RuntimeError> {
         let result = self.stack.pop().expect("stack underflow");
 
         let mut i: usize = 0;
         while i < self.open_captures_ref.len() {
             let capture_ref = self.open_captures_ref[i];
             let stack_id = {
-                let capture = ctx.heap.get(capture_ref).unwrap();
+                let capture = rt.heap.get(capture_ref).unwrap();
                 match capture {
                     Object::Capture(capture) => match capture {
                         Capture::Open(stack_id) => *stack_id,
@@ -62,7 +62,7 @@ impl Vm {
             };
 
             if stack_id >= base {
-                ctx.heap.replace(
+                rt.heap.replace(
                     capture_ref,
                     Object::Capture(Capture::Closed(self.stack[stack_id])),
                 );
@@ -77,7 +77,7 @@ impl Vm {
         Ok(())
     }
 
-    pub fn roots(&mut self, ctx: &Runtime) -> Vec<Value> {
+    pub fn roots(&mut self, rt: &Runtime) -> Vec<Value> {
         let mut roots: Vec<Value> = Vec::new();
 
         for value in &self.stack {
@@ -88,7 +88,7 @@ impl Vm {
         for frame in &self.frames {
             roots.push(Value::Obj(frame.closure_ref));
         }
-        for global in &ctx.globals {
+        for global in &rt.globals {
             if matches!(global.1, Value::Obj(_)) {
                 roots.push(*global.1);
             }
@@ -96,20 +96,20 @@ impl Vm {
         roots
     }
 
-    fn constant_to_value(&mut self, ctx: &mut Runtime, constant: Constant) -> Value {
+    fn constant_to_value(&mut self, rt: &mut Runtime, constant: Constant) -> Value {
         match constant {
             Constant::Symbol(symbol) => Value::Symbol(symbol),
             Constant::String(string) => {
-                let obj_ref = ctx.heap.allocate(Object::String(string));
+                let obj_ref = rt.heap.allocate(Object::String(string));
                 Value::Obj(obj_ref)
             }
             Constant::Number(number) => Value::Number(number),
             Constant::Bool(boolean) => Value::Bool(boolean),
             Constant::Pair(pair) => {
-                let car = self.constant_to_value(ctx, *pair.car);
-                let cdr = self.constant_to_value(ctx, *pair.cdr);
+                let car = self.constant_to_value(rt, *pair.car);
+                let cdr = self.constant_to_value(rt, *pair.cdr);
 
-                let obj_ref = ctx.heap.allocate(Object::Pair(Pair { car, cdr }));
+                let obj_ref = rt.heap.allocate(Object::Pair(Pair { car, cdr }));
 
                 Value::Obj(obj_ref)
             }
@@ -120,7 +120,7 @@ impl Vm {
     fn fetch_instruction(
         &mut self,
         rt: &Runtime,
-    ) -> (Closure, Rc<CompiledUnit>, Instr, usize, Span) {
+    ) -> (Closure, Rc<CompiledUnit>, Instr, usize, Location) {
         let closure = Value::Obj(self.current().closure_ref);
         let closure = Closure::from_value(rt, &closure).unwrap();
         let frame = self.current_mut();
@@ -129,14 +129,18 @@ impl Vm {
         let body = &unit.functions[closure.function].chunk;
         let instr = body.code[frame.ip];
         let span = *body.spans.get(&frame.ip).unwrap();
+        let location = Location {
+            source: unit.source,
+            span,
+        };
 
         frame.ip += 1;
 
-        (closure, unit, instr, frame.base, span)
+        (closure, unit, instr, frame.base, location)
     }
 
-    pub fn step(&mut self, ctx: &mut Runtime) -> Result<Action, RuntimeError> {
-        let (closure, unit, instr, base, span) = self.fetch_instruction(ctx);
+    pub fn step(&mut self, rt: &mut Runtime) -> Result<Action, RuntimeError> {
+        let (closure, unit, instr, base, location) = self.fetch_instruction(rt);
 
         let result = (|| -> Result<Action, RuntimeError> {
             match instr {
@@ -144,26 +148,26 @@ impl Vm {
                 Instr::PushBool(boolean) => self.stack.push(Value::Bool(boolean)),
                 Instr::PushConst(const_id) => {
                     let constant = unit.constants[const_id].clone();
-                    let value = self.constant_to_value(ctx, constant);
+                    let value = self.constant_to_value(rt, constant);
                     self.stack.push(value);
                 }
                 Instr::Pop => {
                     self.stack.pop().expect("stack underflow");
                 }
                 Instr::LoadGlobal(symbol_id) => {
-                    if let Some(global) = ctx.globals.get(&symbol_id) {
+                    if let Some(global) = rt.globals.get(&symbol_id) {
                         self.stack.push(*global);
                     } else {
                         return Err(RuntimeErrorKind::UndefinedVariable.into());
                     }
                 }
                 Instr::SetGlobal(symbol) => {
-                    ctx.globals
+                    rt.globals
                         .insert(symbol, *self.stack.last().expect("stack underflow"));
                 }
                 Instr::LoadCapture(capture_id) => {
                     let capture_ref = closure.captures_ref[capture_id];
-                    let capture = ctx.heap.get(capture_ref).unwrap();
+                    let capture = rt.heap.get(capture_ref).unwrap();
                     if let Object::Capture(capture) = capture {
                         match capture {
                             Capture::Open(stack_id) => self.stack.push(self.stack[*stack_id]),
@@ -177,11 +181,11 @@ impl Vm {
                     let value = *self.stack.last().expect("stack underflow");
 
                     let capture_ref = closure.captures_ref[capture_id];
-                    if let Object::Capture(capture) = ctx.heap.get(capture_ref).unwrap() {
+                    if let Object::Capture(capture) = rt.heap.get(capture_ref).unwrap() {
                         match capture {
                             Capture::Open(stack_id) => self.stack[*stack_id] = value,
                             Capture::Closed(_) => {
-                                ctx.heap
+                                rt.heap
                                     .replace(capture_ref, Object::Capture(Capture::Closed(value)));
                             }
                         }
@@ -208,7 +212,7 @@ impl Vm {
                     return Ok(Action::Call {
                         function: f,
                         argc,
-                        span,
+                        span: location,
                     });
                 }
                 Instr::MakeClosure(id) => {
@@ -224,7 +228,7 @@ impl Vm {
                         if capture.is_local {
                             if let Some(capture_ref) = self.open_captures_ref.iter().find(|&c| {
                                 let stack_index = {
-                                    match ctx.heap.get(*c).unwrap() {
+                                    match rt.heap.get(*c).unwrap() {
                                         Object::Capture(c) => match c {
                                             Capture::Open(stack_index) => *stack_index,
                                             _ => unreachable!(),
@@ -237,7 +241,7 @@ impl Vm {
                                 result.captures_ref.push(*capture_ref);
                             } else {
                                 let capture = Object::Capture(Capture::Open(base + capture.slot));
-                                let capture_ref = ctx.heap.allocate(capture);
+                                let capture_ref = rt.heap.allocate(capture);
                                 self.open_captures_ref.push(capture_ref);
                                 result.captures_ref.push(capture_ref);
                             }
@@ -246,12 +250,12 @@ impl Vm {
                         }
                     }
 
-                    let obj_ref = ctx.heap.allocate(Object::Closure(result));
+                    let obj_ref = rt.heap.allocate(Object::Closure(result));
 
                     self.stack.push(Value::Obj(obj_ref));
                 }
                 Instr::ExitScope(slot) => {
-                    self.exit_scope(ctx, base + slot)?;
+                    self.exit_scope(rt, base + slot)?;
                 }
                 Instr::Jump(ip) => {
                     self.current_mut().ip = ip;
@@ -264,13 +268,13 @@ impl Vm {
                     }
                 }
                 Instr::Return => {
-                    self.exit_scope(ctx, base)?;
+                    self.exit_scope(rt, base)?;
                     self.frames.pop();
                 }
             }
             Ok(Action::Continue)
         })();
 
-        result.map_err(|err| err.at(span))
+        result.map_err(|err| err.at(location))
     }
 }

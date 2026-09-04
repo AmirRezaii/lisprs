@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::{
     compiler::{CompiledUnit, Compiler},
-    diagnostics::{ArgCount, Error, MacroError, MacroErrorKind, Span},
+    diagnostics::{ArgCount, Location, MacroError, MacroErrorKind, Span},
     lisp::Lisp,
     parser::{Expr, ExprKind},
     runtime::{Object, Pair, Value},
@@ -19,12 +19,12 @@ fn define_macro(
     lisp: &mut Lisp,
     macros: &mut Vec<Macro>,
     args: &[Expr],
-    span: Span,
+    location: Location,
 ) -> Result<(), MacroError> {
     if args.len() < 3 {
         return Err(MacroError::new(
             MacroErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(3)),
-            span,
+            location.span,
         ));
     }
 
@@ -37,10 +37,11 @@ fn define_macro(
     let unit = Compiler::compile(
         &Expr {
             kind: ExprKind::List(args.to_vec()),
-            span,
+            span: location.span,
         },
         &mut lisp.runtime.symbols,
         params,
+        location.source,
     )?;
 
     macros.push(Macro {
@@ -87,7 +88,12 @@ fn expand_macro(
 }
 
 // TODO: Expr are very expensive
-pub fn expand(lisp: &mut Lisp, macros: &mut Vec<Macro>, expr: Expr) -> Result<Expr, Error> {
+pub fn expand(
+    lisp: &mut Lisp,
+    macros: &mut Vec<Macro>,
+    expr: Expr,
+    location: Location,
+) -> Result<Expr, MacroError> {
     let span = expr.span;
 
     match expr.kind {
@@ -104,7 +110,7 @@ pub fn expand(lisp: &mut Lisp, macros: &mut Vec<Macro>, expr: Expr) -> Result<Ex
             if let Ok(symbol) = function.into_symbol() {
                 match symbol {
                     "defmacro" => {
-                        define_macro(lisp, macros, args, span)?;
+                        define_macro(lisp, macros, args, location)?;
                         return Ok(Expr {
                             kind: ExprKind::Symbol("nil".to_string()),
                             span,
@@ -122,14 +128,14 @@ pub fn expand(lisp: &mut Lisp, macros: &mut Vec<Macro>, expr: Expr) -> Result<Ex
 
             if let Some(mac) = lookup_macro(macros, function) {
                 let expanded = expand_macro(lisp, &mac, args, span)?;
-                return expand(lisp, macros, expanded);
+                return expand(lisp, macros, expanded, location);
             }
 
             let mut expanded: Vec<Expr> = Vec::new();
 
-            expanded.push(expand(lisp, macros, function.clone())?);
+            expanded.push(expand(lisp, macros, function.clone(), location)?);
             for arg in args {
-                expanded.push(expand(lisp, macros, arg.clone())?);
+                expanded.push(expand(lisp, macros, arg.clone(), location)?);
             }
 
             Ok(Expr {

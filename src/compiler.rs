@@ -13,13 +13,15 @@ pub type CaptureIndex = usize;
 
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
+    pub source: SourceId,
     pub functions: Vec<FunctionProto>,
     pub constants: Vec<Constant>,
 }
 
 impl CompiledUnit {
-    pub fn new() -> Self {
+    pub fn new(source: SourceId) -> Self {
         Self {
+            source,
             functions: Vec::new(),
             constants: Vec::new(),
         }
@@ -880,11 +882,12 @@ impl<'a> Compiler<'a> {
         module: &Expr,
         symbols: &'a mut SymbolTable,
         params: &[Expr],
+        source_id: SourceId,
     ) -> Result<Rc<CompiledUnit>, CompileError> {
         let span = module.span;
         let module = module.into_list()?;
 
-        let mut result = CompiledUnit::new();
+        let mut result = CompiledUnit::new(source_id);
         let func_id = result.add_func(0);
 
         let mut compiler = Compiler::new(&mut result, symbols);

@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use lisprs::{lisp::Lisp, diagnostics::*, runtime::Value};
+use lisprs::{diagnostics::*, lisp::Lisp, runtime::Value};
 
 fn run_file(name: &str) -> Result<Value, Error> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -12,7 +12,7 @@ fn run_file(name: &str) -> Result<Value, Error> {
 
     let mut lisp = Lisp::new();
 
-    lisp.execute(&source)
+    lisp.execute(name, &source)
 }
 
 fn assert_number(value: Value, expected: f64) {
