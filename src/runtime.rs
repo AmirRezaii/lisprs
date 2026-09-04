@@ -1,4 +1,4 @@
-use std::{any::type_name_of_val, collections::HashMap, fmt::Display, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     compiler::{CompiledUnit, FunctionId, StackIndex},
@@ -84,40 +84,6 @@ impl Runtime {
         self.globals.insert(id, Value::NativeFunction(func));
     }
 
-    pub fn format_value(&self, value: &Value) -> String {
-        let result: String;
-
-        match value {
-            Value::Obj(obj_ref) => {
-                let obj = self
-                    .heap
-                    .get(*obj_ref)
-                    .expect("object reference to heap empty");
-                result = String::from(format!("{}", self.format_object(obj)));
-            }
-            Value::Symbol(symbol_id) => result = String::from(self.symbols.resolve(*symbol_id)),
-            other => result = String::from(format!("{other}")),
-        }
-
-        result
-    }
-    pub fn format_object(&self, object: &Object) -> String {
-        let result: String;
-
-        match object {
-            Object::Pair(pair) => {
-                result = String::from(format!(
-                    "({} . {})",
-                    self.format_value(&pair.car),
-                    self.format_value(&pair.cdr)
-                ));
-            }
-            other => result = String::from(format!("{other}")),
-        }
-
-        result
-    }
-
     pub fn format_heap(&self) -> String {
         let mut result = String::new();
         result.push_str("heap = [");
@@ -132,7 +98,7 @@ impl Runtime {
             if i > 0 {
                 result.push_str(", ");
             }
-            result.push_str(&self.format_object(&obj.as_ref().unwrap().object));
+            result.push_str(obj.as_ref().unwrap().object.to_string(self).as_str());
         }
 
         result.push_str("]");
@@ -141,6 +107,13 @@ impl Runtime {
 }
 
 pub type NativeFn = fn(&mut Lisp, &[Value], Span) -> Result<Value, RuntimeError>;
+
+pub trait FromValue: Sized {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind>;
+}
+pub trait ToValue {
+    fn to_value(&self, runtime: &mut Runtime) -> Result<Value, RuntimeErrorKind>;
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
@@ -152,15 +125,162 @@ pub enum Value {
     Nil,
 }
 
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+#[derive(Debug, Clone)]
+pub struct Symbol(pub String);
+
+impl FromValue for f64 {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        match value {
+            Value::Number(n) => Ok(*n),
+            other => Err(RuntimeErrorKind::TypeMismatch(
+                other.ty(rt).to_string(),
+                "number".to_string(),
+            )),
+        }
+    }
+}
+impl FromValue for bool {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        match value {
+            Value::Bool(n) => Ok(*n),
+            other => Err(RuntimeErrorKind::TypeMismatch(
+                other.ty(rt).to_string(),
+                "bool".to_string(),
+            )),
+        }
+    }
+}
+impl FromValue for Symbol {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        match value {
+            Value::Symbol(n) => Ok(Symbol(rt.symbols.resolve(*n).to_string())),
+            other => Err(RuntimeErrorKind::TypeMismatch(
+                other.ty(rt).to_string(),
+                "symbol".to_string(),
+            )),
+        }
+    }
+}
+impl FromValue for NativeFn {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        match value {
+            Value::NativeFunction(n) => Ok(*n),
+            other => Err(RuntimeErrorKind::TypeMismatch(
+                other.ty(rt).to_string(),
+                "native".to_string(),
+            )),
+        }
+    }
+}
+impl FromValue for String {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        let err = Err(RuntimeErrorKind::TypeMismatch(
+            value.ty(rt).to_string(),
+            "string".to_string(),
+        ));
+        match value {
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                match obj {
+                    Object::String(string) => Ok(string.clone()),
+                    _ => err,
+                }
+            }
+            _ => err,
+        }
+    }
+}
+impl FromValue for Vec<Value> {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        let err = Err(RuntimeErrorKind::TypeMismatch(
+            value.ty(rt).to_string(),
+            "list".to_string(),
+        ));
+        match value {
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                match obj {
+                    Object::Pair(_) => {
+                        let mut result: Vec<Value> = Vec::new();
+                        let mut value = *value;
+                        loop {
+                            match value {
+                                Value::Nil => break,
+                                Value::Obj(obj_ref) => match rt.heap.get(obj_ref).unwrap() {
+                                    Object::Pair(Pair { car, cdr }) => {
+                                        result.push(*car);
+                                        value = *cdr;
+                                    }
+                                    _ => return err,
+                                },
+                                _ => return err,
+                            }
+                        }
+                        Ok(result)
+                    }
+                    _ => err,
+                }
+            }
+            _ => err,
+        }
+    }
+}
+impl FromValue for Closure {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        let err = Err(RuntimeErrorKind::TypeMismatch(
+            value.ty(rt).to_string(),
+            "closure".to_string(),
+        ));
+        match value {
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                match obj {
+                    Object::Closure(closure) => Ok(closure.clone()),
+                    _ => err,
+                }
+            }
+            _ => err,
+        }
+    }
+}
+impl FromValue for ObjectRef {
+    fn from_value(rt: &Runtime, value: &Value) -> Result<Self, RuntimeErrorKind> {
+        let err = Err(RuntimeErrorKind::TypeMismatch(
+            value.ty(rt).to_string(),
+            "object_ref".to_string(),
+        ));
+        match value {
+            Value::Obj(obj_ref) => Ok(*obj_ref),
+            _ => err,
+        }
+    }
+}
+
+impl Value {
+    pub fn ty(&self, rt: &Runtime) -> &'static str {
         match self {
-            Value::Symbol(ident) => write!(f, "{ident}"),
-            Value::Number(num) => write!(f, "{num}"),
-            Value::Bool(boolean) => write!(f, "{boolean}"),
-            Value::NativeFunction(fun) => write!(f, "{}", type_name_of_val(&fun)),
-            Value::Obj(obj_ref) => write!(f, "<object #{}>", obj_ref.0),
-            Value::Nil => write!(f, "nil"),
+            Value::Nil => "nil",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "bool",
+            Value::NativeFunction(_) => "native",
+            Value::Symbol(_) => "symbol",
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap();
+                obj.ty()
+            }
+        }
+    }
+    pub fn to_string(&self, rt: &Runtime) -> String {
+        match self {
+            Value::Nil => format!("nil"),
+            Value::Bool(boolean) => format!("{boolean}"),
+            Value::Number(n) => format!("{n}"),
+            Value::Symbol(symbol) => format!("{symbol}"),
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap();
+                obj.to_string(rt)
+            }
+            Value::NativeFunction(native) => format!("<native {native:?}>"),
         }
     }
 }
@@ -345,13 +465,23 @@ pub enum Object {
     Closure(Closure),
     Capture(Capture),
 }
-impl Display for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl Object {
+    pub fn ty(&self) -> &'static str {
         match self {
-            Self::String(string) => write!(f, "{string}"),
-            Self::Pair(pair) => write!(f, "({} . {})", pair.car, pair.cdr),
-            Self::Closure(closure) => write!(f, "<closure #{}>", closure.function),
-            Self::Capture(_capture) => write!(f, "<capture>"),
+            Object::Capture(_) => "capture",
+            Object::Closure(_) => "closure",
+            Object::Pair(_) => "list",
+            Object::String(_) => "string",
+        }
+    }
+    pub fn to_string(&self, rt: &Runtime) -> String {
+        match self {
+            Object::String(string) => format!("{string}"),
+            Object::Pair(Pair { car, cdr }) => {
+                format!("({} {})", car.to_string(rt), cdr.to_string(rt))
+            }
+            Object::Closure(closure) => format!("<closure {}>", closure.function),
+            Object::Capture(capture) => format!("<capture {capture:?}>"),
         }
     }
 }

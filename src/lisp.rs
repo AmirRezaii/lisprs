@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
 use crate::{
-    compiler::{CompiledUnit, Compiler, FunctionProto},
+    compiler::{CompiledUnit, Compiler},
     diagnostics::*,
     lexer::{Lexer, Token},
     mac::{Macro, expand},
     parser::{Expr, ExprKind, Parser},
-    runtime::{Closure, Object, Pair, Runtime, Value},
+    runtime::{Closure, FromValue, NativeFn, Object, ObjectRef, Pair, Runtime, Value},
     vm::{CallFrame, Vm},
 };
 
@@ -34,52 +34,6 @@ impl Lisp {
         }
     }
 
-    fn get_function_proto(
-        &self,
-        f: Value,
-        argc: usize,
-        span: Span,
-    ) -> Result<&FunctionProto, RuntimeError> {
-        match f {
-            Value::Obj(closure_ref) => {
-                let closure = self.runtime.heap.get(closure_ref).unwrap();
-                match closure {
-                    Object::Closure(closure) => {
-                        let proto = &closure.unit.functions[closure.function];
-
-                        if argc != proto.arity {
-                            return Err(RuntimeError::new(
-                                RuntimeErrorKind::InvalidArgumentCount(
-                                    ArgCount::Exact(argc),
-                                    ArgCount::Exact(proto.arity),
-                                ),
-                                span,
-                            ));
-                        }
-
-                        self.vm
-                            .stack
-                            .len()
-                            .checked_sub(proto.arity)
-                            .ok_or(RuntimeError::new(RuntimeErrorKind::StackUnderflow, span))?;
-
-                        Ok(proto)
-                    }
-                    _ => {
-                        return Err(RuntimeError::new(
-                            RuntimeErrorKind::NotAFunction(f.to_string()),
-                            span,
-                        ));
-                    }
-                }
-            }
-            other => Err(RuntimeError::new(
-                RuntimeErrorKind::TypeMismatch(other.to_string(), "function".to_string()),
-                span,
-            )),
-        }
-    }
-
     fn handle_action(&mut self, action: Action) -> Result<(), RuntimeError> {
         match action {
             Action::Continue => Ok(()),
@@ -87,12 +41,9 @@ impl Lisp {
                 function,
                 argc,
                 span,
-            } => match function {
-                Value::NativeFunction(native) => {
-                    let arg_base =
-                        self.vm.stack.len().checked_sub(argc).ok_or_else(|| {
-                            RuntimeError::new(RuntimeErrorKind::StackUnderflow, span)
-                        })?;
+            } => {
+                if let Ok(native) = NativeFn::from_value(&self.runtime, &function) {
+                    let arg_base = self.vm.stack.len() - argc;
 
                     let args = self.vm.stack[arg_base..].to_vec();
 
@@ -107,19 +58,27 @@ impl Lisp {
 
                         Err(error) => Err(error.into()),
                     }
-                }
-                Value::Obj(obj_ref) => {
-                    let arity = self.get_function_proto(function, argc, span)?.arity;
-                    let base = self.vm.stack.len() - arity;
+                } else if let Ok(closure) = Closure::from_value(&self.runtime, &function) {
+                    let proto = &closure.unit.functions[closure.function];
+                    let arity = proto.arity;
+                    let base = self.vm.stack.len() - arity; // TODO: check arity and argc
 
-                    self.vm.frames.push(CallFrame::new(obj_ref, base));
+                    self.vm.frames.push(CallFrame::new(
+                        ObjectRef::from_value(&self.runtime, &function)
+                            .map_err(|err| RuntimeError::new(err, span))?,
+                        base,
+                    ));
                     Ok(())
+                } else {
+                    Err(RuntimeError::new(
+                        RuntimeErrorKind::TypeMismatch(
+                            function.ty(&self.runtime).to_string(),
+                            "function".to_string(),
+                        ),
+                        span,
+                    ))
                 }
-                other => Err(RuntimeError::new(
-                    RuntimeErrorKind::TypeMismatch(other.to_string(), "function".to_string()),
-                    span,
-                )),
-            },
+            }
         }
     }
 
@@ -160,7 +119,10 @@ impl Lisp {
                 self.run_till_depth(calle_frame)
             }
             other => Err(RuntimeError::new(
-                RuntimeErrorKind::TypeMismatch(other.to_string(), "function".to_string()),
+                RuntimeErrorKind::TypeMismatch(
+                    other.ty(&self.runtime).to_string(),
+                    "function".to_string(),
+                ),
                 span,
             )),
         }
