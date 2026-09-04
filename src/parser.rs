@@ -58,6 +58,19 @@ impl Expr {
         let span = self.span;
         match &self.kind {
             ExprKind::List(list) => Ok(list),
+            ExprKind::Symbol(symbol) => {
+                if symbol == "nil" {
+                    Ok(&[])
+                } else {
+                    Err(CompileError::new(
+                        CompileErrorKind::InvalidArgument {
+                            given: symbol.to_string(),
+                            expected: ExprKind::List(Vec::new()).to_string(),
+                        },
+                        span,
+                    ))
+                }
+            }
             other => Err(CompileError::new(
                 CompileErrorKind::InvalidArgument {
                     given: other.to_string(),

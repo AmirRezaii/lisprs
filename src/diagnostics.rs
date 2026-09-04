@@ -2,6 +2,7 @@
 pub enum ErrorKind {
     Lex(LexErrorKind),
     Parse(ParseErrorKind),
+    Macro(MacroErrorKind),
     Compile(CompileErrorKind),
     Runtime(RuntimeErrorKind),
 }
@@ -30,6 +31,11 @@ impl From<ParseError> for Error {
             _ => ErrorKind::Parse(err.kind),
         };
         Error::new(kind, err.span)
+    }
+}
+impl From<MacroError> for Error {
+    fn from(err: MacroError) -> Self {
+        Self::new(ErrorKind::Macro(err.kind), err.span)
     }
 }
 impl From<CompileError> for Error {
@@ -65,6 +71,18 @@ impl Display for Error {
                     write!(f, "extra parenthesis")
                 }
                 ParseErrorKind::Lex(_) => unreachable!(),
+            },
+            ErrorKind::Macro(err) => match err {
+                MacroErrorKind::EvaluationError(err) => write!(f, "{err}"),
+                MacroErrorKind::InvalidArgumentCount(given, expected) => write!(
+                    f,
+                    "expected {} number of arguments but got {}",
+                    expected, given
+                ),
+                MacroErrorKind::InvalidExpansion => write!(
+                    f,
+                    "macro returned a value that cannot be used as an expression"
+                ),
             },
             ErrorKind::Compile(err) => match err {
                 CompileErrorKind::InvalidArgument { given, expected } => {
@@ -114,6 +132,51 @@ impl Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[derive(Debug)]
+pub enum MacroErrorKind {
+    InvalidArgumentCount(ArgCount, ArgCount),
+    InvalidExpansion,
+    EvaluationError(Box<Error>),
+}
+pub struct MacroError {
+    kind: MacroErrorKind,
+    span: Span,
+}
+
+impl From<Error> for MacroError {
+    fn from(err: Error) -> Self {
+        let span = err.span;
+        MacroError {
+            kind: MacroErrorKind::EvaluationError(Box::new(err)),
+            span,
+        }
+    }
+}
+impl From<RuntimeError> for MacroError {
+    fn from(err: RuntimeError) -> Self {
+        let span = err.span;
+        MacroError {
+            kind: MacroErrorKind::EvaluationError(Box::new(err.into())),
+            span,
+        }
+    }
+}
+impl From<CompileError> for MacroError {
+    fn from(err: CompileError) -> Self {
+        let span = err.span;
+        MacroError {
+            kind: MacroErrorKind::EvaluationError(Box::new(err.into())),
+            span,
+        }
+    }
+}
+
+impl MacroError {
+    pub fn new(kind: MacroErrorKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum LexErrorKind {
@@ -187,6 +250,7 @@ pub enum CompileErrorKind {
     LoopNotFound,
 }
 
+#[derive(Debug)]
 pub struct CompileError {
     kind: CompileErrorKind,
     span: Span,
@@ -207,6 +271,7 @@ pub enum RuntimeErrorKind {
     StackUnderflow,
 }
 
+#[derive(Debug)]
 pub struct RuntimeError {
     kind: RuntimeErrorKind,
     span: Span,

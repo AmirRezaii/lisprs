@@ -11,7 +11,7 @@ pub type FunctionId = usize;
 pub type StackIndex = usize;
 pub type CaptureIndex = usize;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledUnit {
     pub functions: Vec<FunctionProto>,
     pub constants: Vec<Constant>,
@@ -471,8 +471,8 @@ impl<'a> Compiler<'a> {
         let first_slot = self.current().locals.len();
 
         let (locals_exprs, body_exprs) = args.split_first().unwrap();
-        let locals_exprs = locals_exprs.into_list()?;
         let mut names: Vec<&str> = Vec::new();
+        let locals_exprs = locals_exprs.into_list()?;
 
         for local in locals_exprs {
             let span = local.span;
@@ -877,30 +877,27 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile(
-        module: &[Expr],
+        module: &Expr,
         symbols: &'a mut SymbolTable,
+        params: &[Expr],
     ) -> Result<Rc<CompiledUnit>, CompileError> {
+        let span = module.span;
+        let module = module.into_list()?;
+
         let mut result = CompiledUnit::new();
-        result.functions.push(FunctionProto::new(0));
+        let func_id = result.add_func(0);
 
         let mut compiler = Compiler::new(&mut result, symbols);
-        compiler.functions.push(FunctionCompiler::new(0));
+        compiler.functions.push(FunctionCompiler::new(func_id));
 
-        let len = module.len();
-        if len == 0 {
-            let span = Span::new(0, 0);
-            compiler.emit(Instr::PushNil, span);
-            compiler.emit(Instr::Return, span);
-        } else {
-            for (idx, arg) in module.iter().enumerate() {
-                compiler.compile_expr(arg)?;
-
-                if idx < len - 1 {
-                    compiler.emit(Instr::Pop, arg.span);
-                }
-            }
-            compiler.emit(Instr::Return, Span::new(0, 0));
+        for param in params {
+            let param = param.into_symbol()?;
+            compiler.add_local(param);
         }
+
+        compiler.compile_progn(module, span)?;
+
+        compiler.emit(Instr::Return, Span::new(0, 0));
         compiler.functions.pop();
 
         Ok(Rc::new(result))

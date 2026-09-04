@@ -4,8 +4,9 @@ use crate::{
     compiler::{CompiledUnit, Compiler, FunctionProto},
     diagnostics::*,
     lexer::{Lexer, Token},
-    parser::{Expr, Parser},
-    runtime::{Closure, Object, Runtime, Value},
+    mac::{Macro, expand},
+    parser::{Expr, ExprKind, Parser},
+    runtime::{Closure, Object, Pair, Runtime, Value},
     vm::{CallFrame, Vm},
 };
 
@@ -122,7 +123,7 @@ impl Lisp {
         }
     }
 
-    fn entry(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, Error> {
+    pub fn alloc_closure(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, Error> {
         assert!(unit.functions.len() > 0);
         let closure_ref = self
             .runtime
@@ -167,11 +168,27 @@ impl Lisp {
 
     pub fn execute(&mut self, source_code: &str) -> Result<Value, Error> {
         let ast = parse_module(source_code)?;
-        let unit = Compiler::compile(&ast, &mut self.runtime.symbols)?;
+        let mut macros: Vec<Macro> = Vec::new();
+        let ast = expand(self, &mut macros, ast)?;
 
-        let entry = self.entry(unit)?;
+        let unit = Compiler::compile(&ast, &mut self.runtime.symbols, &[])?;
+
+        let entry = self.alloc_closure(unit)?;
         let result = self.call(entry, &[], Span::new(0, source_code.len()))?;
         Ok(result)
+    }
+
+    pub fn list_to_pair(&mut self, elements: &[Value], tail: Value) -> Value {
+        let mut cur = tail;
+        for val in elements.iter().rev() {
+            let pair = Pair {
+                car: *val,
+                cdr: cur,
+            };
+            let pair_ref = self.runtime.heap.allocate(Object::Pair(pair));
+            cur = Value::Obj(pair_ref);
+        }
+        cur
     }
 }
 
@@ -182,7 +199,7 @@ pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
     Ok(result)
 }
 
-pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
+pub fn parse_module(source: &str) -> Result<Expr, Error> {
     let mut result: Vec<Expr> = Vec::new();
 
     let lexer = Lexer::new(source);
@@ -191,6 +208,11 @@ pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
     while let Some(expr) = parser.parse_expr()? {
         result.push(expr);
     }
+
+    let result = Expr {
+        kind: ExprKind::List(result),
+        span: Span::new(0, source.len()),
+    };
 
     Ok(result)
 }

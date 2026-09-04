@@ -3,7 +3,7 @@ use std::{
     io::{Write, stdin, stdout},
 };
 
-use lisprs::common::Lisp;
+use lisprs::lisp::Lisp;
 
 fn repl(lisp: &mut Lisp) {
     let mut src = String::new();

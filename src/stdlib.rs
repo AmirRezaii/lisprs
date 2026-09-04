@@ -1,6 +1,6 @@
 use crate::{
-    common::*,
     diagnostics::*,
+    lisp::*,
     runtime::{Object, Pair, Value},
 };
 
@@ -475,18 +475,7 @@ pub fn list(lisp: &mut Lisp, args: &[Value], span: Span) -> Result<Value, Runtim
             span,
         ))
     } else {
-        let mut cur = Value::Nil;
-
-        for val in args.iter().rev() {
-            let pair = Pair {
-                car: *val,
-                cdr: cur,
-            };
-            let pair_ref = lisp.runtime.heap.allocate(Object::Pair(pair));
-            cur = Value::Obj(pair_ref);
-        }
-
-        Ok(cur)
+        Ok(lisp.list_to_pair(args, Value::Nil))
     }
 }
 

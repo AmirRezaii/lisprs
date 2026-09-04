@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
-    common::Action,
+    lisp::Action,
     compiler::{CompiledUnit, Constant, Instr},
     diagnostics::*,
     runtime::*,

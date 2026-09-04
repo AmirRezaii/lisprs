@@ -1,9 +1,9 @@
 use std::{any::type_name_of_val, collections::HashMap, fmt::Display, rc::Rc};
 
 use crate::{
-    common::Lisp,
     compiler::{CompiledUnit, FunctionId, StackIndex},
     diagnostics::*,
+    lisp::Lisp,
     stdlib,
 };
 

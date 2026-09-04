@@ -1,0 +1,18 @@
+List([
+    Symbol("defmacro"),
+    Symbol("when"),
+    List([
+        Symbol("condition"),
+        Symbol("body")
+    ]),
+    List([
+        Symbol("list"),
+        List([
+            Symbol("quote"),
+            Symbol("if")
+        ]),
+        Symbol("condition"),
+        Symbol("body"),
+        Symbol("nil")
+    ])
+])

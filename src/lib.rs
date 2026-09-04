@@ -1,7 +1,8 @@
-pub mod common;
 pub mod compiler;
 pub mod diagnostics;
 pub mod lexer;
+pub mod lisp;
+pub mod mac;
 pub mod parser;
 pub mod runtime;
 pub mod stdlib;
