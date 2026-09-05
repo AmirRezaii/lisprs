@@ -281,7 +281,7 @@ impl Value {
             Value::Nil => format!("nil"),
             Value::Bool(boolean) => format!("{boolean}"),
             Value::Number(n) => format!("{n}"),
-            Value::Symbol(symbol) => format!("{symbol}"),
+            Value::Symbol(symbol) => format!("{}", rt.symbols.resolve(*symbol)),
             Value::Obj(obj_ref) => {
                 let obj = rt.heap.get(*obj_ref).unwrap();
                 obj.to_string(rt)

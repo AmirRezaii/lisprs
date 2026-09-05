@@ -11,13 +11,15 @@ pub struct CallFrame {
     closure_ref: ObjectRef,
     ip: usize,
     base: usize,
+    argc: usize,
 }
 impl CallFrame {
-    pub fn new(closure_ref: ObjectRef, base: usize) -> Self {
+    pub fn new(closure_ref: ObjectRef, base: usize, argc: usize) -> Self {
         Self {
             closure_ref,
             ip: 0,
             base,
+            argc,
         }
     }
 }
@@ -212,7 +214,7 @@ impl Vm {
                     return Ok(Action::Call {
                         function: f,
                         argc,
-                        span: location,
+                        location,
                     });
                 }
                 Instr::MakeClosure(id) => {
@@ -265,6 +267,11 @@ impl Vm {
                         && !value
                     {
                         self.current_mut().ip = ip;
+                    }
+                }
+                Instr::JumpIfArgProvided { slot, target } => {
+                    if self.current().argc > slot {
+                        self.current_mut().ip = target;
                     }
                 }
                 Instr::Return => {

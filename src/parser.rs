@@ -21,6 +21,12 @@ pub struct Expr {
 }
 
 impl Expr {
+    pub fn nil(span: Span) -> Self {
+        Self {
+            kind: ExprKind::List(Vec::new()),
+            span,
+        }
+    }
     pub fn symbol(value: String, span: Span) -> Expr {
         Expr {
             kind: ExprKind::Symbol(value),

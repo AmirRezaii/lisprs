@@ -1,4 +1,5 @@
 use std::{
+    env::{self},
     fs::read_to_string,
     io::{Write, stdin, stdout},
 };
@@ -31,8 +32,12 @@ fn repl(lisp: &mut Lisp) {
     }
 }
 
-fn file(lisp: &mut Lisp, path: &str) {
+fn file(lisp: &mut Lisp, path: &str, expand: bool) {
     let src = read_to_string(path).unwrap();
+
+    if expand {
+        lisp.render_expanded(path, &src).unwrap();
+    }
 
     match lisp.execute(path, &src) {
         Err(err) => {
@@ -44,10 +49,11 @@ fn file(lisp: &mut Lisp, path: &str) {
 
 fn main() {
     let mut lisp = Lisp::new();
+    let expand = env::args().any(|arg| arg == "expand");
 
     if false {
         repl(&mut lisp);
     } else {
-        file(&mut lisp, "test.el");
+        file(&mut lisp, "test.el", expand);
     }
 }

@@ -127,6 +127,16 @@ fn while_loop() {
 }
 
 #[test]
+fn mac() {
+    assert_number(run_file("macro.el").unwrap(), 23.0);
+}
+
+#[test]
+fn optional_param() {
+    assert_number(run_file("optional_param.el").unwrap(), 2.0);
+}
+
+#[test]
 fn undefined_variable_is_runtime_error() {
     let err = run_file("errors.el").unwrap_err();
 

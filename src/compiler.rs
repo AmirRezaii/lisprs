@@ -27,9 +27,9 @@ impl CompiledUnit {
         }
     }
 
-    pub fn add_func(&mut self, arity: usize) -> FunctionId {
+    pub fn add_func(&mut self, params: Params) -> FunctionId {
         let func_id = self.functions.len();
-        self.functions.push(FunctionProto::new(arity));
+        self.functions.push(FunctionProto::new(params));
         func_id
     }
 
@@ -48,7 +48,7 @@ impl Display for CompiledUnit {
         }
 
         for func in &self.functions {
-            writeln!(f, "func(arity: {}):", func.arity)?;
+            writeln!(f, "func(arity: {}):", func.params.count())?;
             for (i, c) in func.chunk.code.iter().enumerate() {
                 write!(f, "{i:2}  ")?;
                 writeln!(f, "{c}")?;
@@ -105,6 +105,7 @@ pub enum Instr {
     ExitScope(Slot),
     Jump(usize),
     JumpIfFalse(usize),
+    JumpIfArgProvided { slot: Slot, target: usize },
     Return,
 }
 
@@ -126,6 +127,9 @@ impl Display for Instr {
             Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot})")?,
             Instr::Jump(ip) => write!(f, "JUMP(ip: {ip})")?,
             Instr::JumpIfFalse(ip) => write!(f, "JUMP_IF_FALSE(ip: {ip})")?,
+            Instr::JumpIfArgProvided { slot, target } => {
+                write!(f, "JUMP_IF_ARG_PROVIDED(slot: {slot}, ip: {target})")?
+            }
             Instr::Return => write!(f, "RETURN")?,
         }
         Ok(())
@@ -139,16 +143,77 @@ pub struct CaptureSource {
     pub is_local: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Params {
+    pub required: usize,
+    pub optionals: usize,
+    pub rest: bool,
+}
+
+impl Params {
+    pub fn new() -> Self {
+        Self {
+            required: 0,
+            optionals: 0,
+            rest: false,
+        }
+    }
+
+    pub fn from_expr(expr: &Expr) -> Option<Self> {
+        let mut result = Params::new();
+
+        let exprs = match &expr.kind {
+            ExprKind::List(list) => list,
+            ExprKind::DottedList { elements, tail: _ } => {
+                result.rest = true;
+                elements
+            }
+            _ => return None,
+        };
+
+        for expr in exprs {
+            match &expr.kind {
+                ExprKind::Symbol(_) => {
+                    if result.optionals > 0 {
+                        return None;
+                    }
+                    result.required += 1;
+                }
+                ExprKind::List(list) => {
+                    if list.len() != 2 {
+                        return None;
+                    }
+                    result.optionals += 1;
+                }
+                _ => return None,
+            }
+        }
+        Some(result)
+    }
+
+    pub fn count(&self) -> ArgCount {
+        let n = self.required;
+
+        if self.rest {
+            ArgCount::Least(n)
+        } else if self.optionals > 0 {
+            ArgCount::Range(n, self.optionals + n)
+        } else {
+            ArgCount::Exact(n)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionProto {
-    pub arity: usize,
+    pub params: Params,
     pub chunk: Chunk,
     pub captures_src: Vec<CaptureSource>,
 }
 impl FunctionProto {
-    pub fn new(arity: usize) -> Self {
+    pub fn new(params: Params) -> Self {
         Self {
-            arity,
+            params,
             chunk: Chunk::new(),
             captures_src: Vec::new(),
         }
@@ -370,7 +435,59 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_lambda(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+    fn compile_params(&mut self, params: &Expr) -> Result<(), CompileError> {
+        let mut rest: Option<&str> = None;
+        let span = params.span;
+        let params = match &params.kind {
+            ExprKind::List(list) => list,
+            ExprKind::DottedList { elements, tail } => {
+                rest = Some(tail.into_symbol()?);
+                elements
+            }
+            _ => unreachable!(),
+        };
+
+        for expr in params {
+            let err = CompileError::new(CompileErrorKind::InvalidParams, expr.span);
+
+            match &expr.kind {
+                ExprKind::Symbol(name) => {
+                    self.add_local(name);
+                }
+                ExprKind::List(list) => {
+                    let slot = self.current().locals.len();
+
+                    let name = list.get(0).ok_or(err.clone())?;
+                    let default_expr = list.get(1).ok_or(err.clone())?;
+
+                    let jump_if_provided =
+                        self.emit(Instr::JumpIfArgProvided { slot, target: 0 }, expr.span);
+
+                    self.compile_expr(default_expr)?;
+                    let target = self.ip();
+                    self.patch_instr(jump_if_provided, Instr::JumpIfArgProvided { slot, target });
+
+                    self.add_local(name.into_symbol()?);
+                }
+                _ => return Err(err),
+            }
+        }
+
+        if let Some(rest) = rest {
+            let slot = self.current().locals.len();
+
+            let jump_if_provided = self.emit(Instr::JumpIfArgProvided { slot, target: 0 }, span);
+
+            self.emit(Instr::PushNil, span);
+            let target = self.ip();
+            self.patch_instr(jump_if_provided, Instr::JumpIfArgProvided { slot, target });
+
+            self.add_local(rest);
+        }
+        Ok(())
+    }
+
+    fn compile_function(&mut self, args: &[Expr], span: Span) -> Result<FunctionId, CompileError> {
         self.begin_scope();
 
         if args.len() < 2 {
@@ -383,27 +500,30 @@ impl<'a> Compiler<'a> {
             ));
         }
 
-        let (params_expr, body_exprs) = args.split_first().unwrap();
+        let (params, body_exprs) = args.split_first().unwrap();
 
-        let params = params_expr.into_list()?;
-        let arity = params.len();
+        if let Some(params_info) = Params::from_expr(params) {
+            let func_id = self.unit.add_func(params_info);
+            self.functions.push(FunctionCompiler::new(func_id));
 
-        let func_id = self.unit.add_func(arity);
-        self.functions.push(FunctionCompiler::new(func_id));
+            self.compile_params(params)?;
 
-        for expr in params {
-            let name = expr.into_symbol()?;
-            self.add_local(name);
+            self.compile_progn(body_exprs, span)?;
+            self.emit(Instr::Return, span);
+
+            self.functions.pop();
+
+            self.end_scope();
+
+            Ok(func_id)
+        } else {
+            Err(CompileError::new(CompileErrorKind::InvalidParams, span))
         }
-        self.compile_progn(body_exprs, span)?;
-        self.emit(Instr::Return, span);
+    }
 
-        self.functions.pop();
-
+    fn compile_lambda(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        let func_id = self.compile_function(args, span)?;
         self.emit(Instr::MakeClosure(func_id), span);
-
-        self.end_scope();
-
         Ok(())
     }
 
@@ -643,7 +763,7 @@ impl<'a> Compiler<'a> {
             return Err(CompileError::new(
                 CompileErrorKind::InvalidArgumentCount(
                     ArgCount::Exact(args.len()),
-                    ArgCount::Between(0, 1),
+                    ArgCount::Range(0, 1),
                 ),
                 span,
             ));
@@ -878,31 +998,33 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub fn compile(
+    pub fn compile_unit(
         module: &Expr,
         symbols: &'a mut SymbolTable,
-        params: &[Expr],
+        params: &Expr,
         source_id: SourceId,
     ) -> Result<Rc<CompiledUnit>, CompileError> {
         let span = module.span;
         let module = module.into_list()?;
 
         let mut result = CompiledUnit::new(source_id);
-        let func_id = result.add_func(0);
 
         let mut compiler = Compiler::new(&mut result, symbols);
-        compiler.functions.push(FunctionCompiler::new(func_id));
 
-        for param in params {
-            let param = param.into_symbol()?;
-            compiler.add_local(param);
+        if let Some(params_info) = Params::from_expr(params) {
+            let func_id = compiler.unit.add_func(params_info);
+            compiler.functions.push(FunctionCompiler::new(func_id));
+
+            compiler.compile_params(params)?;
+
+            compiler.compile_progn(module, span)?;
+
+            compiler.emit(Instr::Return, Span::new(0, 0));
+            compiler.functions.pop();
+
+            Ok(Rc::new(result))
+        } else {
+            Err(CompileError::new(CompileErrorKind::InvalidParams, span))
         }
-
-        compiler.compile_progn(module, span)?;
-
-        compiler.emit(Instr::Return, Span::new(0, 0));
-        compiler.functions.pop();
-
-        Ok(Rc::new(result))
     }
 }

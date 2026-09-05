@@ -160,166 +160,168 @@ pub fn subtract(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> 
 
 pub fn lt(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let args: Result<Vec<f64>, RuntimeError> = args
-            .iter()
-            .map(|arg| f64::from_value(&lisp.runtime, arg))
-            .collect();
-
-        Ok(Value::Bool(lt_(args?.as_slice())))
+        .into());
     }
+    let args: Result<Vec<f64>, RuntimeError> = args
+        .iter()
+        .map(|arg| f64::from_value(&lisp.runtime, arg))
+        .collect();
+
+    Ok(Value::Bool(lt_(args?.as_slice())))
 }
 pub fn lte(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let args: Result<Vec<f64>, RuntimeError> = args
-            .iter()
-            .map(|arg| f64::from_value(&lisp.runtime, arg))
-            .collect();
-
-        Ok(Value::Bool(lte_(args?.as_slice())))
+        .into());
     }
+    let args: Result<Vec<f64>, RuntimeError> = args
+        .iter()
+        .map(|arg| f64::from_value(&lisp.runtime, arg))
+        .collect();
+
+    Ok(Value::Bool(lte_(args?.as_slice())))
 }
 pub fn gt(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let args: Result<Vec<f64>, RuntimeError> = args
-            .iter()
-            .map(|arg| f64::from_value(&lisp.runtime, arg))
-            .collect();
-
-        Ok(Value::Bool(gt_(args?.as_slice())))
+        .into());
     }
+    let args: Result<Vec<f64>, RuntimeError> = args
+        .iter()
+        .map(|arg| f64::from_value(&lisp.runtime, arg))
+        .collect();
+
+    Ok(Value::Bool(gt_(args?.as_slice())))
 }
 pub fn gte(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let args: Result<Vec<f64>, RuntimeError> = args
-            .iter()
-            .map(|arg| f64::from_value(&lisp.runtime, arg))
-            .collect();
-
-        Ok(Value::Bool(gte_(args?.as_slice())))
+        .into());
     }
+    let args: Result<Vec<f64>, RuntimeError> = args
+        .iter()
+        .map(|arg| f64::from_value(&lisp.runtime, arg))
+        .collect();
+
+    Ok(Value::Bool(gte_(args?.as_slice())))
 }
 pub fn equal_num(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let args: Result<Vec<f64>, RuntimeError> = args
-            .iter()
-            .map(|arg| f64::from_value(&lisp.runtime, arg))
-            .collect();
-
-        Ok(Value::Bool(equal_num_(args?.as_slice())))
+        .into());
     }
+    let args: Result<Vec<f64>, RuntimeError> = args
+        .iter()
+        .map(|arg| f64::from_value(&lisp.runtime, arg))
+        .collect();
+
+    Ok(Value::Bool(equal_num_(args?.as_slice())))
 }
 pub fn equal(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        Ok(Value::Bool(equal_(lisp, args)))
+        .into());
     }
+    Ok(Value::Bool(equal_(lisp, args)))
 }
 pub fn eq(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        Ok(Value::Bool(eq_(lisp, args)))
+        .into());
     }
+    Ok(Value::Bool(eq_(lisp, args)))
 }
 
 pub fn and(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        for arg in args {
-            match arg {
-                Value::Bool(boolean) => {
-                    if !*boolean {
-                        return Ok(Value::Bool(false));
-                    }
-                }
-                other => {
-                    return Err(RuntimeErrorKind::TypeMismatch(
-                        other.ty(&lisp.runtime).to_string(),
-                        "boolean".to_string(),
-                    )
-                    .into());
+        .into());
+    }
+    for arg in args {
+        match arg {
+            Value::Bool(boolean) => {
+                if !*boolean {
+                    return Ok(Value::Bool(false));
                 }
             }
+            other => {
+                return Err(RuntimeErrorKind::TypeMismatch(
+                    other.ty(&lisp.runtime).to_string(),
+                    "boolean".to_string(),
+                )
+                .into());
+            }
         }
-        Ok(Value::Bool(true))
     }
+    Ok(Value::Bool(true))
 }
 pub fn or(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        for arg in args {
-            match arg {
-                Value::Bool(boolean) => {
-                    if *boolean {
-                        return Ok(Value::Bool(true));
-                    }
-                }
-                other => {
-                    return Err(RuntimeErrorKind::TypeMismatch(
-                        other.ty(&lisp.runtime).to_string(),
-                        "boolean".to_string(),
-                    )
-                    .into());
+        .into());
+    }
+    for arg in args {
+        match arg {
+            Value::Bool(boolean) => {
+                if *boolean {
+                    return Ok(Value::Bool(true));
                 }
             }
+            other => {
+                return Err(RuntimeErrorKind::TypeMismatch(
+                    other.ty(&lisp.runtime).to_string(),
+                    "boolean".to_string(),
+                )
+                .into());
+            }
         }
-        Ok(Value::Bool(false))
     }
+    Ok(Value::Bool(false))
 }
 
 pub fn print(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
-    if args.len() > 0 {
-        for (i, arg) in args.iter().enumerate() {
-            if i > 0 {
-                print!(" ");
-            }
-            print!("{}", arg.to_string(&lisp.runtime));
-        }
-        print!("\n");
-        Ok(*args.last().unwrap())
-    } else {
-        Err(RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(0), ArgCount::Least(1)).into())
+    if args.len() == 0 {
+        return Err(
+            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(0), ArgCount::Least(1)).into(),
+        );
     }
+
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            print!(" ");
+        }
+        print!("{}", arg.to_string(&lisp.runtime));
+    }
+    print!("\n");
+    return Ok(*args.last().unwrap());
 }
 
 fn pair_to_list(vm: &mut Lisp, value: &Value) -> Result<Vec<Value>, RuntimeError> {
@@ -329,126 +331,127 @@ fn pair_to_list(vm: &mut Lisp, value: &Value) -> Result<Vec<Value>, RuntimeError
 
 pub fn null(_lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Exact(1),
         )
-    } else {
-        Ok(Value::Bool(matches!(&args[0], Value::Nil)))
+        .into());
     }
+    Ok(Value::Bool(matches!(&args[0], Value::Nil)))
 }
 
 pub fn length(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Exact(1),
         )
-    } else {
-        let result = pair_to_list(lisp, &args[0])?;
-        Ok(Value::Number(result.len() as f64))
+        .into());
     }
+    let result = pair_to_list(lisp, &args[0])?;
+    Ok(Value::Number(result.len() as f64))
 }
 
 pub fn apply(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(2),
         )
-    } else {
-        let (f, args) = args.split_first().unwrap();
-        let (list, args) = args.split_last().unwrap();
-
-        let mut args: Vec<Value> = args.to_vec();
-        let mut list = pair_to_list(lisp, list)?;
-        args.append(&mut list);
-
-        lisp.call(*f, args.as_slice())
+        .into());
     }
+    let (f, args) = args.split_first().unwrap();
+    let (list, args) = args.split_last().unwrap();
+
+    let mut args: Vec<Value> = args.to_vec();
+    let mut list = pair_to_list(lisp, list)?;
+    args.append(&mut list);
+
+    lisp.call(*f, args.as_slice())
 }
 
 pub fn cons(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 2 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(2))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Exact(2),
         )
-    } else {
-        let pair = Pair {
-            car: args[0],
-            cdr: args[1],
-        };
-
-        let obj = lisp.runtime.heap.allocate(Object::Pair(pair));
-
-        Ok(Value::Obj(obj))
+        .into());
     }
+    let pair = Pair {
+        car: args[0],
+        cdr: args[1],
+    };
+
+    let obj = lisp.runtime.heap.allocate(Object::Pair(pair));
+
+    Ok(Value::Obj(obj))
 }
 
 pub fn list(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() < 1 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(1))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Least(1),
         )
-    } else {
-        Ok(lisp.list_to_pair(args, Value::Nil))
+        .into());
     }
+
+    Ok(lisp.list_to_pair(args, Value::Nil))
 }
 
 pub fn car(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Exact(1),
         )
-    } else {
-        match &args[0] {
-            Value::Obj(obj_ref) => {
-                let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
-                match obj {
-                    Object::Pair(Pair { car, cdr: _ }) => Ok(*car),
-                    other => Err(RuntimeErrorKind::TypeMismatch(
-                        other.ty().to_string(),
-                        "pair".to_string(),
-                    )
-                    .into()),
-                }
+        .into());
+    }
+    match &args[0] {
+        Value::Obj(obj_ref) => {
+            let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
+            match obj {
+                Object::Pair(Pair { car, cdr: _ }) => Ok(*car),
+                other => Err(RuntimeErrorKind::TypeMismatch(
+                    other.ty().to_string(),
+                    "pair".to_string(),
+                )
+                .into()),
             }
-            other => Err(RuntimeErrorKind::TypeMismatch(
-                other.ty(&lisp.runtime).to_string(),
-                "pair".to_string(),
-            )
-            .into()),
         }
+        other => Err(RuntimeErrorKind::TypeMismatch(
+            other.ty(&lisp.runtime).to_string(),
+            "pair".to_string(),
+        )
+        .into()),
     }
 }
 pub fn cdr(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
-        Err(
-            RuntimeErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Exact(1))
-                .into(),
+        return Err(RuntimeErrorKind::InvalidArgumentCount(
+            ArgCount::Exact(args.len()),
+            ArgCount::Exact(1),
         )
-    } else {
-        match &args[0] {
-            Value::Obj(obj_ref) => {
-                let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
-                match obj {
-                    Object::Pair(Pair { car: _, cdr }) => Ok(*cdr),
-                    other => Err(RuntimeErrorKind::TypeMismatch(
-                        other.ty().to_string(),
-                        "pair".to_string(),
-                    )
-                    .into()),
-                }
+        .into());
+    }
+    match &args[0] {
+        Value::Obj(obj_ref) => {
+            let obj = lisp.runtime.heap.get(*obj_ref).unwrap();
+            match obj {
+                Object::Pair(Pair { car: _, cdr }) => Ok(*cdr),
+                other => Err(RuntimeErrorKind::TypeMismatch(
+                    other.ty().to_string(),
+                    "pair".to_string(),
+                )
+                .into()),
             }
-            other => Err(RuntimeErrorKind::TypeMismatch(
-                other.ty(&lisp.runtime).to_string(),
-                "pair".to_string(),
-            )
-            .into()),
         }
+        other => Err(RuntimeErrorKind::TypeMismatch(
+            other.ty(&lisp.runtime).to_string(),
+            "pair".to_string(),
+        )
+        .into()),
     }
 }
 

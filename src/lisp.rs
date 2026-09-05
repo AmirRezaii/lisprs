@@ -15,13 +15,14 @@ pub enum Action {
     Call {
         function: Value,
         argc: usize,
-        span: Location,
+        location: Location,
     },
 }
 
 pub struct Lisp {
     pub runtime: Runtime,
     vm: Vm,
+    pub macros: Vec<Macro>,
     sources: SourceMap,
 }
 
@@ -32,47 +33,75 @@ impl Lisp {
         Self {
             runtime,
             vm: Vm::new(),
+            macros: Vec::new(),
             sources: SourceMap::new(),
+        }
+    }
+
+    fn dispatch_call(&mut self, function: Value, mut argc: usize) -> Result<(), RuntimeError> {
+        if let Ok(native) = NativeFn::from_value(&self.runtime, &function) {
+            let arg_base = self.vm.stack.len() - argc;
+
+            let args = self.vm.stack[arg_base..].to_vec();
+
+            let result = native(self, args.as_slice());
+
+            self.vm.stack.truncate(arg_base);
+            self.vm.stack.push(result?);
+            Ok(())
+        } else if let Ok(closure) = Closure::from_value(&self.runtime, &function) {
+            let proto = &closure.unit.functions[closure.function];
+            let params = &proto.params;
+            if !params.count().check(&ArgCount::Exact(argc)) {
+                return Err(RuntimeErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(argc),
+                    params.count(),
+                )
+                .into());
+            }
+
+            let rest_num = argc as i64 - (params.required + params.optionals) as i64;
+            if params.rest && rest_num > 0 {
+                let mut rest: Vec<Value> = Vec::new();
+                for _ in 0..rest_num {
+                    let val = self.vm.stack.pop().expect("stack underflow");
+                    rest.push(val);
+                }
+                rest.reverse();
+                let rest = self.list_to_pair(&rest, Value::Nil);
+
+                self.vm.stack.push(rest);
+                argc = argc - rest_num as usize + 1;
+            }
+
+            let base = self.vm.stack.len() - argc;
+
+            self.vm.frames.push(CallFrame::new(
+                ObjectRef::from_value(&self.runtime, &function)?,
+                base,
+                argc,
+            ));
+            Ok(())
+        } else {
+            Err(RuntimeErrorKind::TypeMismatch(
+                function.ty(&self.runtime).to_string(),
+                "function".to_string(),
+            )
+            .into())
         }
     }
 
     fn handle_action(&mut self, action: Action) -> Result<(), RuntimeError> {
         match action {
             Action::Continue => Ok(()),
+            // Call from user program
             Action::Call {
                 function,
                 argc,
-                span: location,
-            } => {
-                if let Ok(native) = NativeFn::from_value(&self.runtime, &function) {
-                    let arg_base = self.vm.stack.len() - argc;
-
-                    let args = self.vm.stack[arg_base..].to_vec();
-
-                    let result = native(self, args.as_slice());
-                    let result = result.map_err(|err| err.at(location))?;
-
-                    self.vm.stack.truncate(arg_base);
-                    self.vm.stack.push(result);
-                    Ok(())
-                } else if let Ok(closure) = Closure::from_value(&self.runtime, &function) {
-                    let proto = &closure.unit.functions[closure.function];
-                    let arity = proto.arity;
-                    let base = self.vm.stack.len() - arity; // TODO: check arity and argc
-
-                    self.vm.frames.push(CallFrame::new(
-                        ObjectRef::from_value(&self.runtime, &function)?,
-                        base,
-                    ));
-                    Ok(())
-                } else {
-                    Err(RuntimeErrorKind::TypeMismatch(
-                        function.ty(&self.runtime).to_string(),
-                        "function".to_string(),
-                    )
-                    .into())
-                }
-            }
+                location,
+            } => self
+                .dispatch_call(function, argc)
+                .map_err(|err| err.at(location)),
         }
     }
 
@@ -103,13 +132,42 @@ impl Lisp {
         match f {
             Value::NativeFunction(native_fn) => native_fn(self, args),
             Value::Obj(closure_ref) => {
+                let mut args = args.to_vec();
+                let mut argc = args.len();
+
+                let closure = Closure::from_value(&self.runtime, &f)?;
+                let proto = &closure.unit.functions[closure.function];
+                let params = &proto.params;
+
+                if !params.count().check(&ArgCount::Exact(argc)) {
+                    return Err(RuntimeErrorKind::InvalidArgumentCount(
+                        ArgCount::Exact(argc),
+                        params.count(),
+                    )
+                    .into());
+                }
+
+                let rest_num = argc as i64 - (params.required + params.optionals) as i64;
+                if params.rest && rest_num > 0 {
+                    let mut rest: Vec<Value> = Vec::new();
+                    for _ in 0..rest_num {
+                        let val = args.pop().expect("args underflow");
+                        rest.push(val);
+                    }
+                    rest.reverse();
+                    let rest = self.list_to_pair(&rest, Value::Nil);
+
+                    args.push(rest);
+                    argc = args.len();
+                }
+
                 let calle_frame = self.vm.frames.len();
 
                 self.vm
                     .frames
-                    .push(CallFrame::new(closure_ref, self.vm.stack.len()));
+                    .push(CallFrame::new(closure_ref, self.vm.stack.len(), argc));
 
-                self.vm.stack.append(&mut args.to_vec());
+                self.vm.stack.append(&mut args);
                 self.run_till_depth(calle_frame)
             }
             other => Err(RuntimeErrorKind::TypeMismatch(
@@ -120,15 +178,13 @@ impl Lisp {
         }
     }
 
-    pub fn execute(&mut self, source_name: &str, source_text: &str) -> Result<Value, Error> {
+    pub fn render_expanded(&mut self, source_name: &str, source_text: &str) -> Result<(), Error> {
         let source_id = self.sources.add(source_name, source_text);
 
         let ast = parse_module(source_text)?;
         let ast_span = ast.span;
-        let mut macros: Vec<Macro> = Vec::new();
         let ast = expand(
             self,
-            &mut macros,
             ast,
             Location {
                 source: source_id,
@@ -136,10 +192,40 @@ impl Lisp {
             },
         )?;
 
-        let unit = Compiler::compile(&ast, &mut self.runtime.symbols, &[], source_id)?;
+        let mut line = 1;
+        println!("Expanded source code:");
+        for expr in ast.into_list()? {
+            print!("{:2} ", line);
+            println!("{}", expr.kind);
+            line += 1;
+        }
+        println!("");
+        Ok(())
+    }
+
+    pub fn execute(&mut self, source_name: &str, source_text: &str) -> Result<Value, Error> {
+        let source_id = self.sources.add(source_name, source_text);
+
+        let ast = parse_module(source_text)?;
+        let ast_span = ast.span;
+        let ast = expand(
+            self,
+            ast,
+            Location {
+                source: source_id,
+                span: ast_span,
+            },
+        )?;
+
+        let unit = Compiler::compile_unit(
+            &ast,
+            &mut self.runtime.symbols,
+            &Expr::nil(ast_span),
+            source_id,
+        )?;
 
         let entry = self.alloc_closure(unit)?;
-        self.call(entry, &[]).map_err(Into::into) // TODO: maybe add span here?
+        self.call(entry, &[]).map_err(Into::into)
     }
 
     pub fn list_to_pair(&mut self, elements: &[Value], tail: Value) -> Value {

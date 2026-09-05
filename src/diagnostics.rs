@@ -90,6 +90,12 @@ impl Display for CompileErrorKind {
             CompileErrorKind::LoopNotFound => {
                 write!(f, "no loop found")
             }
+            CompileErrorKind::InvalidParams => {
+                write!(f, "invalid parameter")
+            }
+            CompileErrorKind::RequiredParamAfterOptionals => {
+                write!(f, "cannot give required parameter after optional")
+            }
         }
     }
 }
@@ -118,7 +124,9 @@ impl Display for RuntimeErrorKind {
 impl Display for MacroErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MacroErrorKind::EvaluationError(err) => write!(f, "{err}"),
+            MacroErrorKind::EvaluationError(err) => {
+                write!(f, "{err}")
+            }
             MacroErrorKind::InvalidArgumentCount(given, expected) => write!(
                 f,
                 "expected {} number of arguments but got {}",
@@ -128,6 +136,8 @@ impl Display for MacroErrorKind {
                 f,
                 "macro returned a value that cannot be used as an expression"
             ),
+            MacroErrorKind::InvalidParams => write!(f, "invalid parameters"),
+            MacroErrorKind::Redefinition => write!(f, "cannot redefine macro"),
         }
     }
 }
@@ -148,6 +158,8 @@ pub enum MacroErrorKind {
     InvalidArgumentCount(ArgCount, ArgCount),
     InvalidExpansion,
     EvaluationError(Box<Error>),
+    InvalidParams,
+    Redefinition,
 }
 #[derive(Debug)]
 pub struct MacroError {
@@ -242,32 +254,54 @@ impl From<LexError> for ParseError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ArgCount {
     Exact(usize),
     Least(usize),
-    Between(usize, usize),
+    Range(usize, usize),
+}
+impl ArgCount {
+    pub fn check(&self, other: &ArgCount) -> bool {
+        match self {
+            Self::Exact(n) => match other {
+                Self::Exact(p) => n == p,
+                _ => false,
+            },
+            Self::Range(n, m) => match other {
+                Self::Exact(p) => n <= p && p <= m,
+                Self::Range(p, q) => n <= p && q <= m,
+                _ => false,
+            },
+            Self::Least(n) => match other {
+                Self::Exact(p) => n <= p,
+                Self::Range(p, q) => n <= p && n <= q,
+                Self::Least(p) => n <= p,
+            },
+        }
+    }
 }
 impl Display for ArgCount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ArgCount::Exact(n) => write!(f, "exactly {n}"),
             ArgCount::Least(n) => write!(f, "at least {n}"),
-            ArgCount::Between(n, m) => write!(f, "between {n} and {m}"),
+            ArgCount::Range(n, m) => write!(f, "between {n} and {m}"),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileErrorKind {
     InvalidArgument { given: String, expected: String },
     InvalidArgumentCount(ArgCount, ArgCount),
     UnexpectedCall(String),
     UnquotedDottedList,
     LoopNotFound,
+    RequiredParamAfterOptionals,
+    InvalidParams,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompileError {
     pub kind: CompileErrorKind,
     pub span: Span,

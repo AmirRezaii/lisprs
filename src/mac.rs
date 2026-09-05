@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
-    compiler::{CompiledUnit, Compiler},
+    compiler::{CompiledUnit, Compiler, Params},
     diagnostics::{ArgCount, Location, MacroError, MacroErrorKind, Span},
     lisp::Lisp,
     parser::{Expr, ExprKind},
@@ -11,16 +11,11 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Macro {
     name: String,
-    arity: usize,
+    params: Params,
     body: Rc<CompiledUnit>,
 }
 
-fn define_macro(
-    lisp: &mut Lisp,
-    macros: &mut Vec<Macro>,
-    args: &[Expr],
-    location: Location,
-) -> Result<(), MacroError> {
+fn define_macro(lisp: &mut Lisp, args: &[Expr], location: Location) -> Result<(), MacroError> {
     if args.len() < 3 {
         return Err(MacroError::new(
             MacroErrorKind::InvalidArgumentCount(ArgCount::Exact(args.len()), ArgCount::Least(3)),
@@ -31,25 +26,41 @@ fn define_macro(
     let (name, args) = args.split_first().unwrap();
     let (params, args) = args.split_first().unwrap();
     let name = name.into_symbol().unwrap();
-    let params = params.into_list().unwrap();
-    let arity = params.len();
 
-    let unit = Compiler::compile(
-        &Expr {
-            kind: ExprKind::List(args.to_vec()),
-            span: location.span,
-        },
-        &mut lisp.runtime.symbols,
-        params,
-        location.source,
-    )?;
+    match lisp.macros.iter().position(|mac| mac.name == name) {
+        Some(i) => {
+            lisp.macros.swap_remove(i);
+        }
+        None => (),
+    }
 
-    macros.push(Macro {
-        name: name.to_string(),
-        arity,
-        body: unit,
-    });
-    Ok(())
+    let start = args.first().unwrap().span.start;
+    let end = args.last().unwrap().span.end;
+    let span = Span { start, end };
+
+    if let Some(params_info) = Params::from_expr(params) {
+        let unit = Compiler::compile_unit(
+            &Expr {
+                kind: ExprKind::List(args.to_vec()),
+                span,
+            },
+            &mut lisp.runtime.symbols,
+            params,
+            location.source,
+        )?;
+
+        lisp.macros.push(Macro {
+            name: name.to_string(),
+            params: params_info,
+            body: unit,
+        });
+        Ok(())
+    } else {
+        Err(MacroError::new(
+            MacroErrorKind::InvalidParams,
+            location.span,
+        ))
+    }
 }
 
 fn lookup_macro(macros: &Vec<Macro>, expr: &Expr) -> Option<Macro> {
@@ -69,12 +80,12 @@ fn expand_macro(
     args: &[Expr],
     span: Span,
 ) -> Result<Expr, MacroError> {
-    if args.len() != mac.arity {
+    let params = mac.params;
+    let argc = args.len();
+
+    if !params.count().check(&ArgCount::Exact(argc)) {
         return Err(MacroError::new(
-            MacroErrorKind::InvalidArgumentCount(
-                ArgCount::Exact(args.len()),
-                ArgCount::Exact(mac.arity),
-            ),
+            MacroErrorKind::InvalidArgumentCount(ArgCount::Exact(argc), params.count()),
             span,
         ));
     }
@@ -88,12 +99,7 @@ fn expand_macro(
 }
 
 // TODO: Expr are very expensive
-pub fn expand(
-    lisp: &mut Lisp,
-    macros: &mut Vec<Macro>,
-    expr: Expr,
-    location: Location,
-) -> Result<Expr, MacroError> {
+pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, MacroError> {
     let span = expr.span;
 
     match expr.kind {
@@ -110,7 +116,14 @@ pub fn expand(
             if let Ok(symbol) = function.into_symbol() {
                 match symbol {
                     "defmacro" => {
-                        define_macro(lisp, macros, args, location)?;
+                        define_macro(
+                            lisp,
+                            args,
+                            Location {
+                                source: location.source,
+                                span,
+                            },
+                        )?;
                         return Ok(Expr {
                             kind: ExprKind::Symbol("nil".to_string()),
                             span,
@@ -126,16 +139,38 @@ pub fn expand(
                 }
             }
 
-            if let Some(mac) = lookup_macro(macros, function) {
+            if let Some(mac) = lookup_macro(&lisp.macros, function) {
                 let expanded = expand_macro(lisp, &mac, args, span)?;
-                return expand(lisp, macros, expanded, location);
+                let span = expanded.span;
+                return expand(
+                    lisp,
+                    expanded,
+                    Location {
+                        source: location.source,
+                        span,
+                    },
+                );
             }
 
             let mut expanded: Vec<Expr> = Vec::new();
 
-            expanded.push(expand(lisp, macros, function.clone(), location)?);
+            expanded.push(expand(
+                lisp,
+                function.clone(),
+                Location {
+                    source: location.source,
+                    span: function.span,
+                },
+            )?);
             for arg in args {
-                expanded.push(expand(lisp, macros, arg.clone(), location)?);
+                expanded.push(expand(
+                    lisp,
+                    arg.clone(),
+                    Location {
+                        source: location.source,
+                        span: arg.span,
+                    },
+                )?);
             }
 
             Ok(Expr {
