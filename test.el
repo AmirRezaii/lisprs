@@ -1,4 +1,4 @@
-(defun hello ((x 2))
-  x)
+(defmacro when (condition body)
+  `(if ,condition ,body nil))
 
-(hello)
+(when true (print "wow"))

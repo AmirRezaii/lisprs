@@ -392,7 +392,7 @@ pub fn list(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
         .into());
     }
 
-    Ok(lisp.list_to_pair(args, Value::Nil))
+    Ok(Value::from_list(&mut lisp.runtime, args, Value::Nil))
 }
 
 pub fn car(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {

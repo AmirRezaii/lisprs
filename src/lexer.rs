@@ -11,6 +11,9 @@ pub enum TokenKind {
     Number(f64),
     Dot,
     Quote,
+    Backtick,
+    Comma,
+    CommaAt,
 }
 
 impl Display for TokenKind {
@@ -23,6 +26,9 @@ impl Display for TokenKind {
             Self::Number(_) => write!(f, "number"),
             Self::Dot => write!(f, "."),
             Self::Quote => write!(f, "'"),
+            Self::Backtick => write!(f, "`"),
+            Self::Comma => write!(f, ","),
+            Self::CommaAt => write!(f, ",@"),
         }
     }
 }
@@ -40,7 +46,7 @@ impl Token {
 }
 
 fn is_delimiter(c: char) -> bool {
-    c.is_whitespace() || c == '(' || c == ')' || c == '"'
+    c.is_whitespace() || c == '(' || c == ')' || c == '"' || c == '`' || c == ',' || c == '\''
 }
 
 #[derive(Debug)]
@@ -152,6 +158,37 @@ impl<'a> Lexer<'a> {
 
         Ok(Token::new(TokenKind::Quote, Span { start, end }))
     }
+    fn next_backtick(&mut self) -> Result<Token, LexError> {
+        let start = self.cur;
+        self.next_char();
+        let end = self.cur;
+
+        Ok(Token::new(TokenKind::Backtick, Span { start, end }))
+    }
+    fn next_comma(&mut self) -> Result<Token, LexError> {
+        let mut at = false;
+
+        let start = self.cur;
+        self.next_char();
+
+        if let Some(&ch) = self.chars.peek()
+            && ch == '@'
+        {
+            self.next_char();
+            at = true;
+        }
+
+        let end = self.cur;
+
+        Ok(Token::new(
+            if at {
+                TokenKind::CommaAt
+            } else {
+                TokenKind::Comma
+            },
+            Span { start, end },
+        ))
+    }
     fn next_dot(&mut self) -> Result<Token, LexError> {
         let start = self.cur;
         self.next_char();
@@ -195,6 +232,8 @@ impl<'a> Iterator for Lexer<'a> {
             ')' => self.next_cparen(),
             '"' => self.next_string(),
             '\'' => self.next_quote(),
+            '`' => self.next_backtick(),
+            ',' => self.next_comma(),
             '.' => self.next_dot(),
             _ => self.next_atom(),
         })

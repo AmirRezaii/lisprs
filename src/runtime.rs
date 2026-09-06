@@ -198,7 +198,7 @@ impl FromValue for String {
         .into());
         match value {
             Value::Obj(obj_ref) => {
-                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                let obj = rt.heap.get(*obj_ref).expect("object reference invalid");
                 match obj {
                     Object::String(string) => Ok(string.clone()),
                     _ => err,
@@ -215,7 +215,7 @@ impl FromValue for Vec<Value> {
         );
         match value {
             Value::Obj(obj_ref) => {
-                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                let obj = rt.heap.get(*obj_ref).expect("object reference invalid");
                 match obj {
                     Object::Pair(_) => {
                         let mut result: Vec<Value> = Vec::new();
@@ -251,7 +251,7 @@ impl FromValue for Closure {
         .into());
         match value {
             Value::Obj(obj_ref) => {
-                let obj = rt.heap.get(*obj_ref).unwrap(); // TODO: should have specific runtime error for unavailable objects
+                let obj = rt.heap.get(*obj_ref).expect("object reference invalid");
                 match obj {
                     Object::Closure(closure) => Ok(closure.clone()),
                     _ => err,
@@ -276,6 +276,24 @@ impl FromValue for ObjectRef {
 }
 
 impl Value {
+    pub fn from_list(rt: &mut Runtime, list: &[Value], tail: Value) -> Self {
+        let mut cur = tail;
+        for val in list.iter().rev() {
+            let pair = Pair {
+                car: *val,
+                cdr: cur,
+            };
+            let pair_ref = rt.heap.allocate(Object::Pair(pair));
+            cur = Value::Obj(pair_ref);
+        }
+        cur
+    }
+
+    pub fn pair(rt: &mut Runtime, car: Value, cdr: Value) -> Self {
+        let obj = Object::Pair(Pair { car, cdr });
+        Value::Obj(rt.heap.allocate(obj))
+    }
+
     pub fn ty(&self, rt: &Runtime) -> &'static str {
         match self {
             Value::Nil => "nil",

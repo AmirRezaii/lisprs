@@ -96,6 +96,18 @@ impl Display for CompileErrorKind {
             CompileErrorKind::RequiredParamAfterOptionals => {
                 write!(f, "cannot give required parameter after optional")
             }
+            CompileErrorKind::UnquoteOutsideQuasiquote => {
+                write!(f, "cannot unquote outside quasiquote")
+            }
+            CompileErrorKind::SpliceOutsideQuasiquote => {
+                write!(f, "cannot splice outside quasiquote")
+            }
+            CompileErrorKind::InvalidUnquoteSplicing => {
+                write!(
+                    f,
+                    "unquote-splicing is only valid within a quasiquoted list"
+                )
+            }
         }
     }
 }
@@ -118,6 +130,9 @@ impl Display for RuntimeErrorKind {
                     expected, given
                 )
             }
+            RuntimeErrorKind::SplicingImproperList => {
+                write!(f, "cannot splice improper list")
+            }
         }
     }
 }
@@ -138,6 +153,12 @@ impl Display for MacroErrorKind {
             ),
             MacroErrorKind::InvalidParams => write!(f, "invalid parameters"),
             MacroErrorKind::Redefinition => write!(f, "cannot redefine macro"),
+            MacroErrorKind::DefinitionNotToplevel => {
+                write!(f, "macro definition must be at the toplevel")
+            }
+            MacroErrorKind::UnquoteOutsideQuasiquote => {
+                write!(f, "cannot unquote outside quasiquote")
+            }
         }
     }
 }
@@ -160,6 +181,8 @@ pub enum MacroErrorKind {
     EvaluationError(Box<Error>),
     InvalidParams,
     Redefinition,
+    DefinitionNotToplevel,
+    UnquoteOutsideQuasiquote,
 }
 #[derive(Debug)]
 pub struct MacroError {
@@ -299,6 +322,9 @@ pub enum CompileErrorKind {
     LoopNotFound,
     RequiredParamAfterOptionals,
     InvalidParams,
+    UnquoteOutsideQuasiquote,
+    SpliceOutsideQuasiquote,
+    InvalidUnquoteSplicing,
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +345,7 @@ pub enum RuntimeErrorKind {
     NotAFunction(String),
     TypeMismatch(String, String),
     InvalidArgumentCount(ArgCount, ArgCount),
+    SplicingImproperList,
 }
 
 #[derive(Debug)]

@@ -106,33 +106,36 @@ pub enum Instr {
     Jump(usize),
     JumpIfFalse(usize),
     JumpIfArgProvided { slot: Slot, target: usize },
+    Append,
+    Cons,
     Return,
 }
 
 impl Display for Instr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Instr::Call(arity) => write!(f, "CALL(arity: {arity})")?,
-            Instr::MakeClosure(id) => write!(f, "CLOSURE(func_id: {id})")?,
-            Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global)?,
-            Instr::SetGlobal(global) => write!(f, "SET_GLOBAL(global_id: {})", global)?,
-            Instr::LoadCapture(capture) => write!(f, "LOAD_CAPTURE(capture_id: {})", capture)?,
-            Instr::SetCapture(capture) => write!(f, "SET_CAPTURE(capture_id: {})", capture)?,
-            Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local)?,
-            Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local)?,
-            Instr::Pop => write!(f, "POP")?,
-            Instr::PushNil => write!(f, "PUSH_NIL")?,
-            Instr::PushBool(boolean) => write!(f, "PUSH_BOOL(value: {boolean})")?,
-            Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})")?,
-            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot})")?,
-            Instr::Jump(ip) => write!(f, "JUMP(ip: {ip})")?,
-            Instr::JumpIfFalse(ip) => write!(f, "JUMP_IF_FALSE(ip: {ip})")?,
+            Instr::Call(arity) => write!(f, "CALL(arity: {arity})"),
+            Instr::MakeClosure(id) => write!(f, "CLOSURE(func_id: {id})"),
+            Instr::LoadGlobal(global) => write!(f, "LOAD_GLOBAL(global_id: {})", global),
+            Instr::SetGlobal(global) => write!(f, "SET_GLOBAL(global_id: {})", global),
+            Instr::LoadCapture(capture) => write!(f, "LOAD_CAPTURE(capture_id: {})", capture),
+            Instr::SetCapture(capture) => write!(f, "SET_CAPTURE(capture_id: {})", capture),
+            Instr::LoadLocal(local) => write!(f, "LOAD_LOCAL(local_id: {})", local),
+            Instr::SetLocal(local) => write!(f, "SET_LOCAL(local_id: {})", local),
+            Instr::Pop => write!(f, "POP"),
+            Instr::PushNil => write!(f, "PUSH_NIL"),
+            Instr::PushBool(boolean) => write!(f, "PUSH_BOOL(value: {boolean})"),
+            Instr::PushConst(const_id) => write!(f, "PUSH_CONST(const_id: {const_id})"),
+            Instr::ExitScope(slot) => write!(f, "EXIT_SCOPE(slot: {slot})"),
+            Instr::Jump(ip) => write!(f, "JUMP(ip: {ip})"),
+            Instr::JumpIfFalse(ip) => write!(f, "JUMP_IF_FALSE(ip: {ip})"),
             Instr::JumpIfArgProvided { slot, target } => {
-                write!(f, "JUMP_IF_ARG_PROVIDED(slot: {slot}, ip: {target})")?
+                write!(f, "JUMP_IF_ARG_PROVIDED(slot: {slot}, ip: {target})")
             }
-            Instr::Return => write!(f, "RETURN")?,
+            Instr::Append => write!(f, "APPEND"),
+            Instr::Cons => write!(f, "CONS"),
+            Instr::Return => write!(f, "RETURN"),
         }
-        Ok(())
     }
 }
 
@@ -814,6 +817,116 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn compile_quote(&mut self, args: &[Expr], span: Span) -> Result<(), CompileError> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                CompileErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(args.len()),
+                    ArgCount::Exact(1),
+                ),
+                span,
+            ));
+        }
+        let constant = self.compile_quoted_dattum(&args[0])?;
+        let id = self.unit.add_const(constant);
+        self.emit(Instr::PushConst(id), span);
+        Ok(())
+    }
+
+    fn compile_qq_list(
+        &mut self,
+        elements: &[Expr],
+        tail: Option<&Expr>,
+        depth: usize,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let Some((first, rest)) = elements.split_first() else {
+            if let Some(tail) = tail {
+                self.compile_quasiquote(tail, depth, tail.span)?;
+            } else {
+                self.emit(Instr::PushNil, span);
+            }
+
+            return Ok(());
+        };
+
+        if depth == 1 {
+            if let Some(spliced) = get_unquote_splicing_arg(first) {
+                self.compile_expr(spliced)?;
+                self.compile_qq_list(rest, tail, depth, span)?;
+                self.emit(Instr::Append, first.span);
+                return Ok(());
+            }
+        }
+
+        self.compile_quasiquote(first, depth, first.span)?;
+        self.compile_qq_list(rest, tail, depth, span)?;
+        self.emit(Instr::Cons, first.span);
+        Ok(())
+    }
+
+    fn compile_quasiquote(
+        &mut self,
+        expr: &Expr,
+        depth: usize,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        assert!(depth >= 1);
+
+        match &expr.kind {
+            ExprKind::Symbol(symbol) => match symbol.as_str() {
+                "nil" => {
+                    self.emit(Instr::PushNil, expr.span);
+                }
+                "true" => {
+                    self.emit(Instr::PushBool(true), expr.span);
+                }
+                "false" => {
+                    self.emit(Instr::PushBool(false), expr.span);
+                }
+                other => {
+                    let id = self.symbols.intern(other);
+                    let id = self.unit.add_const(Constant::Symbol(id));
+                    self.emit(Instr::PushConst(id), span);
+                }
+            },
+            ExprKind::Number(value) => {
+                let id = self.unit.add_const(Constant::Number(*value));
+                self.emit(Instr::PushConst(id), expr.span);
+            }
+            ExprKind::String(value) => {
+                let id = self.unit.add_const(Constant::String(value.clone()));
+                self.emit(Instr::PushConst(id), expr.span);
+            }
+            ExprKind::List(list) => {
+                if get_quasiquote_arg(expr).is_some() {
+                    self.compile_qq_list(list, None, depth + 1, expr.span)?;
+                } else if let Some(arg) = get_unquote_arg(expr) {
+                    if depth > 1 {
+                        self.compile_qq_list(list, None, depth - 1, expr.span)?;
+                    } else {
+                        self.compile_expr(arg)?;
+                    }
+                } else if get_unquote_splicing_arg(expr).is_some() {
+                    if depth > 1 {
+                        self.compile_qq_list(list, None, depth - 1, expr.span)?;
+                    } else {
+                        return Err(CompileError::new(
+                            CompileErrorKind::InvalidUnquoteSplicing,
+                            expr.span,
+                        ));
+                    }
+                } else {
+                    self.compile_qq_list(list, None, depth, expr.span)?
+                }
+            }
+            ExprKind::DottedList { elements, tail } => {
+                self.compile_qq_list(elements, Some(tail), depth, expr.span)?
+            }
+        }
+        Ok(())
+    }
+
     fn compile_args(&mut self, args: &[Expr]) -> Result<usize, CompileError> {
         let arity = args.len();
         for arg in args {
@@ -849,7 +962,10 @@ impl<'a> Compiler<'a> {
             match &head.kind {
                 ExprKind::Symbol(symbol) => match symbol.as_str() {
                     "quote" => {
-                        if args.len() != 1 {
+                        self.compile_quote(args, span)?;
+                    }
+                    "quasiquote" => {
+                        let Some(arg) = args.get(0) else {
                             return Err(CompileError::new(
                                 CompileErrorKind::InvalidArgumentCount(
                                     ArgCount::Exact(args.len()),
@@ -857,10 +973,20 @@ impl<'a> Compiler<'a> {
                                 ),
                                 span,
                             ));
-                        }
-                        let constant = self.compile_quoted_dattum(&args[0])?;
-                        let id = self.unit.add_const(constant);
-                        self.emit(Instr::PushConst(id), span);
+                        };
+                        self.compile_quasiquote(arg, 1, span)?;
+                    }
+                    "unquote" => {
+                        return Err(CompileError::new(
+                            CompileErrorKind::UnquoteOutsideQuasiquote,
+                            span,
+                        ));
+                    }
+                    "unquote-splicing" => {
+                        return Err(CompileError::new(
+                            CompileErrorKind::SpliceOutsideQuasiquote,
+                            span,
+                        ));
                     }
                     "setq" => {
                         self.compile_setq(args, span)?;
@@ -999,15 +1125,14 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile_unit(
-        module: &Expr,
+        module: &[Expr],
         symbols: &'a mut SymbolTable,
         params: &Expr,
-        source_id: SourceId,
+        location: Location,
     ) -> Result<Rc<CompiledUnit>, CompileError> {
-        let span = module.span;
-        let module = module.into_list()?;
+        let span = location.span;
 
-        let mut result = CompiledUnit::new(source_id);
+        let mut result = CompiledUnit::new(location.source);
 
         let mut compiler = Compiler::new(&mut result, symbols);
 
@@ -1026,5 +1151,60 @@ impl<'a> Compiler<'a> {
         } else {
             Err(CompileError::new(CompileErrorKind::InvalidParams, span))
         }
+    }
+}
+
+fn get_unquote_arg(expr: &Expr) -> Option<&Expr> {
+    let exprs = expr.into_list().ok()?;
+
+    if exprs.len() != 2 {
+        return None;
+    }
+    let first = &exprs[0];
+    match &first.kind {
+        ExprKind::Symbol(symbol) => {
+            if symbol == "unquote" {
+                Some(&exprs[1])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+fn get_unquote_splicing_arg(expr: &Expr) -> Option<&Expr> {
+    let exprs = expr.into_list().ok()?;
+
+    if exprs.len() != 2 {
+        return None;
+    }
+
+    let first = &exprs[0];
+    match &first.kind {
+        ExprKind::Symbol(symbol) => {
+            if symbol == "unquote-splicing" {
+                Some(&exprs[1])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+fn get_quasiquote_arg(expr: &Expr) -> Option<&Expr> {
+    let exprs = expr.into_list().ok()?;
+    if exprs.len() != 2 {
+        return None;
+    }
+    let first = &exprs[0];
+    match &first.kind {
+        ExprKind::Symbol(symbol) => {
+            if symbol == "quasiquote" {
+                Some(&exprs[1])
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }

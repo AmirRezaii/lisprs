@@ -34,20 +34,8 @@ fn define_macro(lisp: &mut Lisp, args: &[Expr], location: Location) -> Result<()
         None => (),
     }
 
-    let start = args.first().unwrap().span.start;
-    let end = args.last().unwrap().span.end;
-    let span = Span { start, end };
-
     if let Some(params_info) = Params::from_expr(params) {
-        let unit = Compiler::compile_unit(
-            &Expr {
-                kind: ExprKind::List(args.to_vec()),
-                span,
-            },
-            &mut lisp.runtime.symbols,
-            params,
-            location.source,
-        )?;
+        let unit = Compiler::compile_unit(args, &mut lisp.runtime.symbols, params, location)?;
 
         lisp.macros.push(Macro {
             name: name.to_string(),
@@ -92,23 +80,131 @@ fn expand_macro(
 
     let args: Vec<Value> = args.iter().map(|arg| expr_to_val(lisp, arg)).collect();
 
-    let f = lisp.alloc_closure(mac.body.clone())?;
+    let f = lisp.entry_closure(mac.body.clone())?;
     let result = lisp.call(f, &args)?;
     val_to_expr(lisp, result, span)
         .ok_or(MacroError::new(MacroErrorKind::InvalidExpansion, span).into())
 }
 
+fn expand_quasiquote(
+    lisp: &mut Lisp,
+    expr: &Expr,
+    depth: usize,
+    location: Location,
+) -> Result<Expr, MacroError> {
+    let span = expr.span;
+    match &expr.kind {
+        ExprKind::List(list) => {
+            let Some((first, list)) = list.split_first() else {
+                return Ok(expr.clone());
+            };
+
+            if let Ok(symbol) = first.into_symbol() {
+                match symbol {
+                    "quote" => {
+                        return Ok(expr.clone());
+                    }
+                    "quasiquote" => {
+                        if list.len() != 1 {
+                            return Err(MacroError::new(
+                                MacroErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(list.len()),
+                                    ArgCount::Exact(1),
+                                ),
+                                span,
+                            ));
+                        }
+                        let arg = &list[0];
+                        let expanded_arg = expand_quasiquote(
+                            lisp,
+                            arg,
+                            depth + 1,
+                            Location {
+                                source: location.source,
+                                span: arg.span,
+                            },
+                        )?;
+                        return Ok(Expr {
+                            kind: ExprKind::List(vec![first.clone(), expanded_arg]),
+                            span,
+                        });
+                    }
+                    "unquote" | "unquote-splicing" => {
+                        if list.len() != 1 {
+                            return Err(MacroError::new(
+                                MacroErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(list.len()),
+                                    ArgCount::Exact(1),
+                                ),
+                                span,
+                            ));
+                        }
+                        let arg = &list[0];
+                        let span = arg.span;
+                        let location = Location {
+                            source: location.source,
+                            span,
+                        };
+                        let expanded_arg = if depth > 1 {
+                            expand_quasiquote(lisp, arg, depth - 1, location)?
+                        } else {
+                            expand(lisp, arg, location, false)?
+                        };
+
+                        return Ok(Expr {
+                            kind: ExprKind::List(vec![first.clone(), expanded_arg]),
+                            span,
+                        });
+                    }
+                    _ => (),
+                }
+            }
+
+            let mut expanded: Vec<Expr> = Vec::new();
+
+            expanded.push(expand_quasiquote(
+                lisp,
+                first,
+                depth,
+                Location {
+                    source: location.source,
+                    span: first.span,
+                },
+            )?);
+            for arg in list {
+                expanded.push(expand_quasiquote(
+                    lisp,
+                    arg,
+                    depth,
+                    Location {
+                        source: location.source,
+                        span: arg.span,
+                    },
+                )?);
+            }
+
+            Ok(Expr {
+                kind: ExprKind::List(expanded),
+                span,
+            })
+        }
+        _ => Ok(expr.clone()),
+    }
+}
+
 // TODO: Expr are very expensive
-pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, MacroError> {
+pub fn expand(
+    lisp: &mut Lisp,
+    expr: &Expr,
+    location: Location,
+    toplevel: bool,
+) -> Result<Expr, MacroError> {
     let span = expr.span;
 
-    match expr.kind {
+    match &expr.kind {
         ExprKind::List(list) => {
             if list.len() < 1 {
-                return Ok(Expr {
-                    kind: ExprKind::List(list),
-                    span,
-                });
+                return Ok(expr.clone());
             }
 
             let (function, args) = list.split_first().unwrap();
@@ -116,6 +212,13 @@ pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, M
             if let Ok(symbol) = function.into_symbol() {
                 match symbol {
                     "defmacro" => {
+                        if !toplevel {
+                            println!("bruh {}", expr.kind);
+                            return Err(MacroError::new(
+                                MacroErrorKind::DefinitionNotToplevel,
+                                span,
+                            ));
+                        }
                         define_macro(
                             lisp,
                             args,
@@ -130,10 +233,38 @@ pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, M
                         });
                     }
                     "quote" => {
+                        return Ok(expr.clone());
+                    }
+                    "quasiquote" => {
+                        if args.len() != 1 {
+                            return Err(MacroError::new(
+                                MacroErrorKind::InvalidArgumentCount(
+                                    ArgCount::Exact(args.len()),
+                                    ArgCount::Exact(1),
+                                ),
+                                span,
+                            ));
+                        }
+                        let arg = &args[0];
+                        let expanded_arg = expand_quasiquote(
+                            lisp,
+                            arg,
+                            1,
+                            Location {
+                                source: location.source,
+                                span: arg.span,
+                            },
+                        )?;
                         return Ok(Expr {
-                            kind: ExprKind::List(list),
+                            kind: ExprKind::List(vec![function.clone(), expanded_arg]),
                             span,
                         });
+                    }
+                    "unquote" | "unquote-splicing" => {
+                        return Err(MacroError::new(
+                            MacroErrorKind::UnquoteOutsideQuasiquote,
+                            span,
+                        ));
                     }
                     _ => (),
                 }
@@ -144,11 +275,12 @@ pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, M
                 let span = expanded.span;
                 return expand(
                     lisp,
-                    expanded,
+                    &expanded,
                     Location {
                         source: location.source,
                         span,
                     },
+                    false,
                 );
             }
 
@@ -156,20 +288,22 @@ pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, M
 
             expanded.push(expand(
                 lisp,
-                function.clone(),
+                function,
                 Location {
                     source: location.source,
                     span: function.span,
                 },
+                false,
             )?);
             for arg in args {
                 expanded.push(expand(
                     lisp,
-                    arg.clone(),
+                    arg,
                     Location {
                         source: location.source,
                         span: arg.span,
                     },
+                    false,
                 )?);
             }
 
@@ -178,7 +312,7 @@ pub fn expand(lisp: &mut Lisp, expr: Expr, location: Location) -> Result<Expr, M
                 span,
             })
         }
-        _ => Ok(expr),
+        _ => Ok(expr.clone()),
     }
 }
 

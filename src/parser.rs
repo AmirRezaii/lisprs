@@ -92,7 +92,7 @@ impl Display for ExprKind {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match &self {
             ExprKind::Symbol(ident) => write!(f, "{ident}"),
-            ExprKind::String(string) => write!(f, "{string}"),
+            ExprKind::String(string) => write!(f, "\"{string}\""),
             ExprKind::Number(num) => write!(f, "{num}"),
             ExprKind::List(list) => {
                 write!(f, "(")?;
@@ -174,14 +174,14 @@ where
         ))
     }
 
-    fn parse_quote(&mut self, start: usize) -> Result<Expr, ParseError> {
+    fn parse_prefix(&mut self, prefix: &str, start: usize) -> Result<Expr, ParseError> {
         if let Some(expr) = self.parse_expr()? {
             let end = expr.span.end;
 
             let mut exprs: Vec<Expr> = Vec::new();
 
             exprs.push(Expr {
-                kind: ExprKind::Symbol("quote".to_string()),
+                kind: ExprKind::Symbol(prefix.to_string()),
                 span: Span { start, end },
             });
             exprs.push(expr);
@@ -203,6 +203,7 @@ where
             ))
         }
     }
+
     // Span of the list starts from the parenthesis in here
     fn parse_list(&mut self, start: usize) -> Result<Expr, ParseError> {
         let mut exprs: Vec<Expr> = Vec::new();
@@ -254,7 +255,14 @@ where
                 TokenKind::Number(number) => Ok(Some(Expr::number(number, token.span))),
                 TokenKind::String(string) => Ok(Some(Expr::string(string.clone(), token.span))),
                 TokenKind::Symbol(symbol) => Ok(Some(Expr::symbol(symbol.clone(), token.span))),
-                TokenKind::Quote => Ok(Some(self.parse_quote(token.span.start)?)),
+
+                TokenKind::Quote => Ok(Some(self.parse_prefix("quote", token.span.start)?)),
+                TokenKind::Backtick => Ok(Some(self.parse_prefix("quasiquote", token.span.start)?)),
+                TokenKind::Comma => Ok(Some(self.parse_prefix("unquote", token.span.start)?)),
+                TokenKind::CommaAt => Ok(Some(
+                    self.parse_prefix("unquote-splicing", token.span.start)?,
+                )),
+
                 TokenKind::CloseParen => Err(ParseError::new(
                     ParseErrorKind::ExtraParen(token.kind.to_string()),
                     token.span,

@@ -5,8 +5,8 @@ use crate::{
     diagnostics::*,
     lexer::{Lexer, Token},
     mac::{Macro, expand},
-    parser::{Expr, ExprKind, Parser},
-    runtime::{Closure, FromValue, NativeFn, Object, ObjectRef, Pair, Runtime, Value},
+    parser::{Expr, Parser},
+    runtime::{Closure, FromValue, NativeFn, Object, ObjectRef, Runtime, Value},
     vm::{CallFrame, Vm},
 };
 
@@ -68,7 +68,7 @@ impl Lisp {
                     rest.push(val);
                 }
                 rest.reverse();
-                let rest = self.list_to_pair(&rest, Value::Nil);
+                let rest = Value::from_list(&mut self.runtime, &rest, Value::Nil);
 
                 self.vm.stack.push(rest);
                 argc = argc - rest_num as usize + 1;
@@ -105,7 +105,7 @@ impl Lisp {
         }
     }
 
-    pub fn alloc_closure(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, Error> {
+    pub fn entry_closure(&mut self, unit: Rc<CompiledUnit>) -> Result<Value, Error> {
         assert!(unit.functions.len() > 0);
         let closure_ref = self
             .runtime
@@ -155,7 +155,7 @@ impl Lisp {
                         rest.push(val);
                     }
                     rest.reverse();
-                    let rest = self.list_to_pair(&rest, Value::Nil);
+                    let rest = Value::from_list(&mut self.runtime, &rest, Value::Nil);
 
                     args.push(rest);
                     argc = args.len();
@@ -182,19 +182,25 @@ impl Lisp {
         let source_id = self.sources.add(source_name, source_text);
 
         let ast = parse_module(source_text)?;
-        let ast_span = ast.span;
-        let ast = expand(
-            self,
-            ast,
-            Location {
-                source: source_id,
-                span: ast_span,
-            },
-        )?;
+        let ast = ast
+            .iter()
+            .map(|expr| {
+                let span = expr.span;
+                expand(
+                    self,
+                    expr,
+                    Location {
+                        source: source_id,
+                        span: span,
+                    },
+                    true,
+                )
+            })
+            .collect::<Result<Vec<Expr>, MacroError>>()?;
 
         let mut line = 1;
         println!("Expanded source code:");
-        for expr in ast.into_list()? {
+        for expr in ast {
             print!("{:2} ", line);
             println!("{}", expr.kind);
             line += 1;
@@ -205,40 +211,41 @@ impl Lisp {
 
     pub fn execute(&mut self, source_name: &str, source_text: &str) -> Result<Value, Error> {
         let source_id = self.sources.add(source_name, source_text);
+        let location = Location {
+            source: source_id,
+            span: Span {
+                start: 0,
+                end: source_text.len(),
+            },
+        };
 
         let ast = parse_module(source_text)?;
-        let ast_span = ast.span;
-        let ast = expand(
-            self,
-            ast,
-            Location {
-                source: source_id,
-                span: ast_span,
-            },
-        )?;
+        let ast = ast
+            .iter()
+            .map(|expr| {
+                let span = expr.span;
+                expand(
+                    self,
+                    expr,
+                    Location {
+                        source: source_id,
+                        span,
+                    },
+                    true,
+                )
+            })
+            .collect::<Result<Vec<Expr>, MacroError>>()?;
 
         let unit = Compiler::compile_unit(
             &ast,
             &mut self.runtime.symbols,
-            &Expr::nil(ast_span),
-            source_id,
+            &Expr::nil(location.span),
+            location,
         )?;
+        // println!("{unit}");
 
-        let entry = self.alloc_closure(unit)?;
+        let entry = self.entry_closure(unit)?;
         self.call(entry, &[]).map_err(Into::into)
-    }
-
-    pub fn list_to_pair(&mut self, elements: &[Value], tail: Value) -> Value {
-        let mut cur = tail;
-        for val in elements.iter().rev() {
-            let pair = Pair {
-                car: *val,
-                cdr: cur,
-            };
-            let pair_ref = self.runtime.heap.allocate(Object::Pair(pair));
-            cur = Value::Obj(pair_ref);
-        }
-        cur
     }
 
     pub fn render_error(&mut self, err: Error, cur_name: &str, cur_source: &str) -> String {
@@ -288,7 +295,7 @@ pub fn lex_module(source: &str) -> Result<Vec<Token>, Error> {
     Ok(result)
 }
 
-pub fn parse_module(source: &str) -> Result<Expr, Error> {
+pub fn parse_module(source: &str) -> Result<Vec<Expr>, Error> {
     let mut result: Vec<Expr> = Vec::new();
 
     let lexer = Lexer::new(source);
@@ -297,11 +304,6 @@ pub fn parse_module(source: &str) -> Result<Expr, Error> {
     while let Some(expr) = parser.parse_expr()? {
         result.push(expr);
     }
-
-    let result = Expr {
-        kind: ExprKind::List(result),
-        span: Span::new(0, source.len()),
-    };
 
     Ok(result)
 }

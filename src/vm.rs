@@ -274,6 +274,20 @@ impl Vm {
                         self.current_mut().ip = target;
                     }
                 }
+                Instr::Append => {
+                    let value = self.stack.pop().expect("stack underflow");
+                    let list = self.stack.pop().expect("stack underflow");
+                    let list = Vec::<Value>::from_value(rt, &list)
+                        .map_err(|_| RuntimeErrorKind::SplicingImproperList)?;
+
+                    self.stack.push(Value::from_list(rt, &list, value));
+                }
+                Instr::Cons => {
+                    let cdr = self.stack.pop().expect("stack underflow");
+                    let car = self.stack.pop().expect("stack underflow");
+
+                    self.stack.push(Value::pair(rt, car, cdr));
+                }
                 Instr::Return => {
                     self.exit_scope(rt, base)?;
                     self.frames.pop();
