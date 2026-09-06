@@ -15,6 +15,21 @@ fn run_file(name: &str) -> Result<Value, Error> {
     lisp.execute(name, &source)
 }
 
+fn run_file_error(name: &str) -> (Lisp, String, Error) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("programs")
+        .join(name);
+
+    let source = fs::read_to_string(path).expect("failed to read Lisp test file");
+    let mut lisp = Lisp::new();
+    let error = lisp
+        .execute(name, &source)
+        .expect_err("program was expected to fail");
+
+    (lisp, source, error)
+}
+
 fn assert_number(value: Value, expected: f64) {
     match value {
         Value::Number(actual) => {
@@ -129,6 +144,101 @@ fn while_loop() {
 #[test]
 fn mac() {
     assert_number(run_file("macro.el").unwrap(), 23.0);
+}
+
+#[test]
+fn macro_optional_parameter_uses_default_and_supplied_value() {
+    assert_number(run_file("macro_optional.el").unwrap(), 25.0);
+}
+
+#[test]
+fn macro_rest_parameter_collects_extra_forms() {
+    assert_number(run_file("macro_rest.el").unwrap(), 10.0);
+}
+
+#[test]
+fn nested_macro_expansion_is_reexpanded() {
+    assert_number(run_file("macro_nested.el").unwrap(), 5.0);
+}
+
+#[test]
+fn macro_body_closures_capture_macro_parameters() {
+    assert_number(run_file("macro_capture.el").unwrap(), 12.0);
+}
+
+#[test]
+fn unused_macro_arguments_are_not_evaluated() {
+    assert_number(run_file("macro_unused_argument.el").unwrap(), 42.0);
+}
+
+#[test]
+fn macro_body_runtime_errors_point_into_the_macro_body() {
+    let (mut lisp, source, error) = run_file_error("macro_body_error.el");
+    let body_start = source.find("(car 1)").expect("macro body not found");
+
+    match &error {
+        Error::Macro(error) => {
+            assert_eq!(error.span.start, body_start);
+            assert_eq!(error.span.end, body_start + "(car 1)".len());
+
+            match &error.kind {
+                MacroErrorKind::EvaluationError(inner) => match inner.as_ref() {
+                    Error::Runtime(runtime) => {
+                        let location = runtime
+                            .location
+                            .expect("macro-body runtime error should be located");
+                        assert_eq!(location.span.start, body_start);
+                    }
+                    other => panic!("expected nested runtime error, got {other:?}"),
+                },
+                other => panic!("expected macro evaluation error, got {other:?}"),
+            }
+        }
+        other => panic!("expected macro error, got {other:?}"),
+    }
+
+    let rendered = lisp.render_error(error, "macro_body_error.el", &source);
+    assert!(rendered.contains("(car 1)"));
+}
+
+#[test]
+fn errors_from_generated_code_point_at_the_macro_call() {
+    let (_lisp, source, error) = run_file_error("macro_generated_error.el");
+    let call_start = source
+        .find("(generated-error)")
+        .expect("macro call not found");
+
+    match error {
+        Error::Runtime(error) => {
+            let location = error.location.expect("runtime error should be located");
+            assert_eq!(location.span.start, call_start);
+            assert_eq!(location.span.end, call_start + "(generated-error)".len());
+        }
+        other => panic!("expected runtime error, got {other:?}"),
+    }
+}
+
+#[test]
+fn macro_argument_count_errors_point_at_the_macro_call() {
+    let (_lisp, source, error) = run_file_error("macro_wrong_arity.el");
+    let call_start = source.find("(needs-two 1)").expect("macro call not found");
+
+    match error {
+        Error::Macro(error) => {
+            assert_eq!(error.span.start, call_start);
+            match error.kind {
+                MacroErrorKind::InvalidArgumentCount(
+                    ArgCount::Exact(given),
+                    ArgCount::Exact(expected),
+                ) => {
+                    assert_eq!(given, 1);
+                    assert_eq!(expected, 2);
+                }
+                other => panic!("expected macro argument-count error, got {other:?}"),
+            }
+        }
+        other => panic!("expected macro error, got {other:?}"),
+    }
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, fmt::Display, rc::Rc};
 
 use crate::{
     compiler::{CompiledUnit, FunctionId, StackIndex},
@@ -123,6 +123,19 @@ pub enum Value {
     NativeFunction(NativeFn),
     Obj(ObjectRef),
     Nil,
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool(boolean) => write!(f, "{boolean}"),
+            Self::NativeFunction(native) => write!(f, "<native {:?}>", native),
+            Self::Nil => write!(f, "nil"),
+            Self::Number(n) => write!(f, "{n}"),
+            Self::Obj(obj_ref) => write!(f, "<object #{}>", obj_ref.0),
+            Self::Symbol(symbol) => write!(f, "<symbol {}>", symbol),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -281,12 +294,64 @@ impl Value {
             Value::Nil => format!("nil"),
             Value::Bool(boolean) => format!("{boolean}"),
             Value::Number(n) => format!("{n}"),
-            Value::Symbol(symbol) => format!("{}", rt.symbols.resolve(*symbol)),
+            Value::Symbol(symbol) => format!("'{}", rt.symbols.resolve(*symbol)),
             Value::Obj(obj_ref) => {
                 let obj = rt.heap.get(*obj_ref).unwrap();
                 obj.to_string(rt)
             }
             Value::NativeFunction(native) => format!("<native {native:?}>"),
+        }
+    }
+    pub fn debug(&self, rt: &Runtime) -> String {
+        match self {
+            Value::Nil => format!("nil"),
+            Value::Bool(boolean) => format!("{boolean}"),
+            Value::Number(n) => format!("{n}"),
+            Value::Symbol(symbol) => format!("'{}", rt.symbols.resolve(*symbol)),
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).unwrap();
+                obj.debug(rt)
+            }
+            Value::NativeFunction(native) => format!("<native {native:?}>"),
+        }
+    }
+
+    pub fn to_dotted_list(&self, rt: &Runtime) -> Result<(Vec<Value>, Value), RuntimeError> {
+        let err = Err(RuntimeErrorKind::TypeMismatch(
+            self.ty(rt).to_string(),
+            "dotted list".to_string(),
+        )
+        .into());
+
+        let value = self;
+        match value {
+            Value::Obj(obj_ref) => {
+                let obj = rt.heap.get(*obj_ref).expect("object reference invalid");
+                match obj {
+                    Object::Pair(_) => {
+                        let mut result: Vec<Value> = Vec::new();
+                        let mut value = *value;
+                        loop {
+                            match value {
+                                Value::Obj(obj_ref) => match rt.heap.get(obj_ref).unwrap() {
+                                    Object::Pair(Pair { car, cdr }) => {
+                                        result.push(*car);
+                                        value = *cdr;
+                                    }
+                                    _ => {
+                                        return Ok((result, value));
+                                    }
+                                },
+                                _ => {
+                                    return Ok((result, value));
+                                }
+                            }
+                        }
+                    }
+                    _ => err,
+                }
+            }
+            _ => err,
         }
     }
 }
@@ -484,7 +549,17 @@ impl Object {
         match self {
             Object::String(string) => format!("{string}"),
             Object::Pair(Pair { car, cdr }) => {
-                format!("({} {})", car.to_string(rt), cdr.to_string(rt))
+                format!("({} . {})", car.debug(rt), cdr.debug(rt))
+            }
+            Object::Closure(closure) => format!("<closure {}>", closure.function),
+            Object::Capture(capture) => format!("<capture {capture:?}>"),
+        }
+    }
+    pub fn debug(&self, rt: &Runtime) -> String {
+        match self {
+            Object::String(string) => format!("\"{string}\""),
+            Object::Pair(Pair { car, cdr }) => {
+                format!("({} . {})", car.debug(rt), cdr.debug(rt))
             }
             Object::Closure(closure) => format!("<closure {}>", closure.function),
             Object::Capture(capture) => format!("<capture {capture:?}>"),

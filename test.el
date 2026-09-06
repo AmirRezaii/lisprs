@@ -1,4 +1,4 @@
-(defun hello (x)
-  (list print x))
+(defun hello ((x 2))
+  x)
 
-(hello "hello")
+(hello)

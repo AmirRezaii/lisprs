@@ -21,7 +21,7 @@ fn repl(lisp: &mut Lisp) {
             Err(err) => {
                 eprintln!("{}", lisp.render_error(err, &source_name, &src));
             }
-            Ok(value) => println!("result: {}", value.to_string(&lisp.runtime)),
+            Ok(value) => println!("{}", value.debug(&lisp.runtime)),
         }
 
         src.clear();
@@ -36,24 +36,31 @@ fn file(lisp: &mut Lisp, path: &str, expand: bool) {
     let src = read_to_string(path).unwrap();
 
     if expand {
-        lisp.render_expanded(path, &src).unwrap();
+        match lisp.render_expanded(path, &src) {
+            Err(_) => {
+                eprintln!("ERROR: could not expand macros");
+            }
+            Ok(_) => (),
+        }
     }
 
     match lisp.execute(path, &src) {
         Err(err) => {
             eprintln!("{}", lisp.render_error(err, path, &src));
         }
-        Ok(value) => println!("result: {}", value.to_string(&lisp.runtime)),
+        Ok(value) => println!("result: {}", value.debug(&lisp.runtime)),
     }
 }
 
 fn main() {
     let mut lisp = Lisp::new();
-    let expand = env::args().any(|arg| arg == "expand");
+    let mut args = env::args();
+    let _ = args.next().unwrap();
+    let expand = env::args().any(|arg| arg == "-expand");
 
-    if false {
-        repl(&mut lisp);
+    if let Some(path) = args.next() {
+        file(&mut lisp, &path, expand);
     } else {
-        file(&mut lisp, "test.el", expand);
+        repl(&mut lisp);
     }
 }

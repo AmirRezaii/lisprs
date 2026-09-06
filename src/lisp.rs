@@ -263,13 +263,12 @@ impl Lisp {
             ),
             Error::Runtime(err) => {
                 let location = err.location.unwrap();
+                let source = self.sources.get(location.source);
                 format!(
                     "{}: {}\n{}",
-                    cur_name,
+                    source.name,
                     err.kind,
-                    location
-                        .span
-                        .render(self.sources.get(location.source).text.as_str())
+                    location.span.render(source.text.as_str())
                 )
             }
             Error::Macro(err) => format!(

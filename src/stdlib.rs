@@ -324,11 +324,6 @@ pub fn print(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     return Ok(*args.last().unwrap());
 }
 
-fn pair_to_list(vm: &mut Lisp, value: &Value) -> Result<Vec<Value>, RuntimeError> {
-    let result: Vec<Value> = Vec::from_value(&vm.runtime, value)?;
-    Ok(result)
-}
-
 pub fn null(_lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     if args.len() != 1 {
         return Err(RuntimeErrorKind::InvalidArgumentCount(
@@ -348,7 +343,7 @@ pub fn length(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
         )
         .into());
     }
-    let result = pair_to_list(lisp, &args[0])?;
+    let result = Vec::from_value(&lisp.runtime, &args[0])?;
     Ok(Value::Number(result.len() as f64))
 }
 
@@ -364,7 +359,7 @@ pub fn apply(lisp: &mut Lisp, args: &[Value]) -> Result<Value, RuntimeError> {
     let (list, args) = args.split_last().unwrap();
 
     let mut args: Vec<Value> = args.to_vec();
-    let mut list = pair_to_list(lisp, list)?;
+    let mut list = Vec::from_value(&lisp.runtime, list)?;
     args.append(&mut list);
 
     lisp.call(*f, args.as_slice())
